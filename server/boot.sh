@@ -1,10 +1,10 @@
 #!/bin/bash
-# gpupool on a teammate's StratusGeo GPU server (uploaded to ~/gpupool by RunJobs). Runs GitHub's own runner
+# gpupool on a teammate's StratusGeo GPU server (uploaded to ~/gpupool by the Hermes app). Runs GitHub's own runner
 # (~/actions-runner/run.sh), takes queued jobs until none are left, then stops this server. Everything lives here:
-# the laptop can close as soon as RunJobs says so. Never prints tokens.
+# the laptop can close as soon as Hermes says so. Never prints tokens.
 #   bash ~/gpupool/boot.sh install    once, pasted into a JupyterLab terminal: adds a one-line hook to ~/.profile and
 #                                     ~/.bashrc that runs boot.sh only while ~/gpupool/armed exists, then starts
-#   bash ~/gpupool/boot.sh [start]    normal start (RunJobs writes ~/gpupool/armed, then opens a terminal via the API)
+#   bash ~/gpupool/boot.sh [start]    normal start (Hermes writes ~/gpupool/armed, then opens a terminal via the API)
 #   bash ~/gpupool/boot.sh --check    PASS/FAIL checks (GPU, S3 read, runner registered), then stop this server
 #   bash ~/gpupool/boot.sh --dry-run  the same checks, changes nothing, does not stop the server
 # Stops the server (hub API, as ~/hubq/runner.sh does) after jobs_per_launch jobs (config.yml in the public repo, read
@@ -12,7 +12,7 @@
 # re-uploads anything the workflow parked in ~/gpupool/unsaved (results it could not confirm in S3) and says so if
 # that still fails. Lifetime: no new job after MAX_S - DRAIN_S (a job arriving later fails fast and `pool recover`
 # reruns it elsewhere; a running job's time is capped so its log + results are saved); stop at MAX_S.
-# Status line for RunJobs: ~/gpupool/status.txt.
+# Status line for the Hermes app: ~/gpupool/status.txt.
 set -euo pipefail
 G=~/gpupool; R=~/actions-runner; REPO_URL=https://github.com/Luxaris/gpupool-jobs  # pool-only repo, never the hub backup repo
 CONFIG_URL=${GPUPOOL_CONFIG_URL:-https://raw.githubusercontent.com/Luxaris/gpupool-launcher/main/config.yml}
@@ -42,11 +42,11 @@ confirm_saved() {  # never stop silently with unconfirmed results: retry what th
 }
 hub_stop() {
   say "$1"
-  pkill -INT -f "$R/bin/Runner.Listener" || true; sleep 20  # give RunJobs (if still open) time to show the line
+  pkill -INT -f "$R/bin/Runner.Listener" || true; sleep 20  # give Hermes (if still open) time to show the line
   curl -s -o /dev/null -X DELETE -H "Authorization: token ${JUPYTERHUB_API_TOKEN:-}" "${JUPYTERHUB_API_URL:-}/users/${JUPYTERHUB_USER:-}/server" || true
   sleep 90; pkill -TERM -f jupyterhub-singleuser || true; exit 0  # the hub did not stop us: end the server ourselves
 }
-checks() {  # one PASS/FAIL line each, also appended to ~/gpupool/selftest.txt for the RunJobs window
+checks() {  # one PASS/FAIL line each, also appended to ~/gpupool/selftest.txt for the Hermes window
   local fails=0
   c() { local n=$1; shift; if "$@" > /dev/null 2>&1; then r="PASS $n"; else r="FAIL $n"; fails=$((fails + 1)); fi; echo "CHECK $r" | tee -a $G/selftest.txt; }
   c "GPU visible (nvidia-smi)" nvidia-smi -L
@@ -64,7 +64,7 @@ case "$MODE" in
     touch $G/hooked; echo "gpupool hook installed. You can close this browser tab."
     MODE=$(cat $G/armed 2> /dev/null || echo start) ;;
 esac
-rm -f $G/armed  # one start per RunJobs press; the teammate's own terminals never trigger anything
+rm -f $G/armed  # one start per Start press; the teammate's own terminals never trigger anything
 if [ "${2:-}" != --bg ]; then  # detach from the Jupyter terminal
   setsid nohup bash $G/boot.sh "$MODE" --bg >> $G/boot.log 2>&1 < /dev/null &
   exit 0
@@ -75,7 +75,7 @@ if [ "$MODE" = --check ]; then checks; hub_stop "Check finished, stopping your G
 
 export TZ=PCT7 DOTNET_SYSTEM_GLOBALIZATION_INVARIANT=1  # the runner then needs no libicu
 START=$(date +%s); echo "$START $MAX_S $DRAIN_S" > $G/lifetime  # read by the workflow to cap a job's time
-nvidia-smi -L > /dev/null 2>&1 || hub_stop "ERROR: this server has no GPU. Stopping it; run RunJobs again."
+nvidia-smi -L > /dev/null 2>&1 || hub_stop "ERROR: this server has no GPU. Stopping it; press Start in Hermes again."
 if [ -s $G/regtoken ] || [ ! -f $R/.runner ]; then  # GitHub's documented install: download, config.sh --unattended
   [ -s $G/regtoken ] || { rm -f $G/registered; hub_stop "ERROR: this GPU is not registered yet. Ask Pranav for a registration code and run again."; }
   say "Setting up your GPU for the job pool (first time only, about 2 min)..."
@@ -93,7 +93,7 @@ if [ -s $G/regtoken ] || [ ! -f $R/.runner ]; then  # GitHub's documented instal
   rm -f $G/regtoken
   [ "${ok:-}" != no ] || hub_stop "ERROR: registration failed (codes expire after 1 hour). Ask Pranav for a new code and run again."
 fi
-touch $G/registered  # RunJobs checks this (the Jupyter API cannot read hidden files like .runner)
+touch $G/registered  # Hermes checks this (the Jupyter API cannot read hidden files like .runner)
 pgrep -f "$R/bin/Runner.Listener" > /dev/null || (cd $R && nohup ./run.sh >> $G/runner.out 2>&1 < /dev/null &)
 max_jobs=$(limit)
 say "Ready: your GPU takes up to $max_jobs job(s) from the queue. You can close this window."

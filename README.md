@@ -1,13 +1,14 @@
 # Lend your GPU to the team
 
-**The deal:** whenever you have free time, press **Start** in the Run Jobs app. Your StratusGeo GPU switches on, works through a couple of the team's queued experiments, and switches itself off. You can close the app or shut your laptop right after pressing Start. Every log and result is saved to the team's S3 bucket and GitHub. There is no pressure: if you never press it again, nothing breaks and the jobs just wait.
+**The deal:** whenever you have free time, press **Start** in the **Hermes** app. Your StratusGeo GPU switches on, works through a couple of the team's queued experiments, and switches itself off. You can close the app or shut your laptop right after pressing Start. Every log and result is saved to the team's S3 bucket and GitHub. There is no pressure: if you never press it again, nothing breaks and the jobs just wait.
 
 ## Install (one file, nothing else)
 
 1. Download from https://github.com/Luxaris/gpupool-launcher/releases/latest:
-   - **Windows:** `RunJobs-Setup.exe`. If Windows says *"Windows protected your PC"*, click **More info**, then **Run anyway**. It installs for your user only, so no admin is needed. You get a **Run Jobs** shortcut in the Start menu and on the desktop, and it can be uninstalled from Settings > Apps.
-   - **Mac:** `RunJobs-mac-arm64.dmg` for Apple-chip Macs (M1 and later) or `RunJobs-mac-x64.dmg` for Intel Macs. Open it and drag **Run Jobs** to Applications. The first time, **right-click Run Jobs > Open > Open**.
-2. Open **Run Jobs**. A short setup wizard walks you through about 15 minutes, once:
+   - **Windows:** `Hermes-Setup.exe`. If Windows says *"Windows protected your PC"*, click **More info**, then **Run anyway**. It installs for your user only, so no admin is needed. You get a **Hermes** shortcut in the Start menu and on the desktop, and it can be uninstalled from Settings > Apps.
+   - **Mac:** `Hermes-mac-arm64.dmg` for Apple-chip Macs (M1 and later) or `Hermes-mac-x64.dmg` for Intel Macs. Open it and drag **Hermes** to Applications. The first time, **right-click Hermes > Open > Open**.
+   - The `RunJobs-*` files on the release are the same installers, used to update older copies automatically. Ignore them.
+2. Open **Hermes**. A short setup wizard walks you through about 15 minutes, once:
    - **Step 1, hub login:** a button opens the hub's token page. Copy the token and paste it with your username. The app checks it straight away.
    - **Step 2, the code from Pranav:** paste it. It expires 1 hour after he makes it; if it has expired, ask him for a new one.
    - **Step 3, one line on your hub:** the app starts your GPU server, then gives you an **Open terminal** button and a big **Copy** button. Paste the line into the terminal and press Enter. The app notices by itself when it's done.

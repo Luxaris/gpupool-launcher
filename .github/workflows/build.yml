@@ -1,6 +1,9 @@
-# Public repo Luxaris/gpupool-launcher: when `pool publish` makes a release, build the self-contained apps on
-# GitHub-hosted runners and attach them to that release. PyInstaller bundles Python + Tkinter; Inno Setup (Windows,
-# preinstalled on windows-latest) and hdiutil (macOS) wrap them in a standard installer. No secrets: GITHUB_TOKEN only.
+# Public repo Luxaris/gpupool-launcher: when `pool publish` makes a release, build the self-contained Hermes app on
+# GitHub-hosted runners and attach the installers to that release. PyInstaller bundles Python + Tkinter; Inno Setup
+# (Windows, preinstalled on windows-latest) and hdiutil (macOS) wrap them in a standard installer. No secrets.
+# Bridge for v1 ("Run Jobs") apps, which self-update from the old asset names: each installer is also attached
+# under its v1 name (the Mac one with the app folder named RunJobs.app, which is what v1 copies out of the .dmg).
+# Drop the `legacy` uploads once no v1 installs remain.
 name: build
 on:
   release:
@@ -12,9 +15,9 @@ jobs:
     strategy:
       matrix:
         include:
-          - { os: windows-latest, asset: RunJobs-Setup.exe }
-          - { os: macos-latest, asset: RunJobs-mac-arm64.dmg }
-          - { os: macos-15-intel, asset: RunJobs-mac-x64.dmg }
+          - { os: windows-latest, asset: Hermes-Setup.exe, legacy: RunJobs-Setup.exe }
+          - { os: macos-latest, asset: Hermes-mac-arm64.dmg, legacy: RunJobs-mac-arm64.dmg }
+          - { os: macos-15-intel, asset: Hermes-mac-x64.dmg, legacy: RunJobs-mac-x64.dmg }
     runs-on: ${{ matrix.os }}
     env:
       GH_TOKEN: ${{ github.token }}
@@ -24,17 +27,20 @@ jobs:
       - uses: actions/setup-python@v7
         with: { python-version: '3.13' }
       - run: pip install pyinstaller
-      - run: pyinstaller --noconfirm --onedir --windowed --name RunJobs gpupool_gui.py
+      - run: pyinstaller --noconfirm --onedir --windowed --name Hermes gpupool_gui.py
       - name: Windows installer (Inno Setup)
         if: runner.os == 'Windows'
         shell: pwsh
         run: |
-          & "${env:ProgramFiles(x86)}\Inno Setup 6\iscc.exe" "/DAppVersion=$($env:TAG.TrimStart('v'))" "/DSrcDir=$PWD\dist\RunJobs" "/DOutDir=$PWD\out" installer\RunJobs.iss
+          & "${env:ProgramFiles(x86)}\Inno Setup 6\iscc.exe" "/DAppVersion=$($env:TAG.TrimStart('v'))" "/DSrcDir=$PWD\dist\Hermes" "/DOutDir=$PWD\out" installer\Hermes.iss
           if ($LASTEXITCODE) { exit 1 }
-          gh release upload $env:TAG "out\${{ matrix.asset }}" --clobber
-      - name: Mac disk image (hdiutil)
+          Copy-Item "out\${{ matrix.asset }}" "out\${{ matrix.legacy }}"
+          gh release upload $env:TAG "out\${{ matrix.asset }}" "out\${{ matrix.legacy }}" --clobber
+      - name: Mac disk images (hdiutil)
         if: runner.os == 'macOS'
         run: |
-          mkdir dmg && cp -R dist/RunJobs.app dmg/ && ln -s /Applications dmg/Applications
-          hdiutil create -volname "Run Jobs" -srcfolder dmg -ov -format UDZO "${{ matrix.asset }}"
-          gh release upload "$TAG" "${{ matrix.asset }}" --clobber
+          mkdir dmg legacy && cp -R dist/Hermes.app dmg/ && cp -R dist/Hermes.app legacy/RunJobs.app
+          ln -s /Applications dmg/Applications && ln -s /Applications legacy/Applications
+          hdiutil create -volname "Hermes" -srcfolder dmg -ov -format UDZO "${{ matrix.asset }}"
+          hdiutil create -volname "Hermes" -srcfolder legacy -ov -format UDZO "${{ matrix.legacy }}"
+          gh release upload "$TAG" "${{ matrix.asset }}" "${{ matrix.legacy }}" --clobber

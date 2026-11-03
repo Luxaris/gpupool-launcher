@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
-"""gpupool engine: lend your StratusGeo GPU to the team job pool. Stdlib only (Python 3.8+).
+"""Hermes engine (gpupool): lend your StratusGeo GPU to the team job pool. Stdlib only (Python 3.8+).
 
-Used by the app (gpupool_gui.py, built into RunJobs-Setup.exe / RunJobs.dmg) and by a plain CLI:
+Used by the Hermes app (gpupool_gui.py, built into Hermes-Setup.exe / Hermes-mac-*.dmg) and by a plain CLI:
     python gpupool.py [--check | --update | --dry-run | --reset]
 Everything after a launch runs on the hub server (boot.sh): the laptop may close. Talks only to
   - the JupyterHub REST API (start your default server) and the Jupyter REST API on it (files, one terminal),
@@ -10,7 +10,8 @@ Your hub token stays in a user-only file in your config dir; nothing of Pranav's
 """
 import base64, hashlib, json, os, platform, stat, subprocess, sys, tempfile, time, urllib.error, urllib.request, webbrowser
 
-VERSION = 1
+VERSION = 2
+APP = 'Hermes'
 HUB = 'https://hub.stratusgeo.org'
 TOKEN_PAGE = f'{HUB}/hub/token'
 PUBLIC = 'Luxaris/gpupool-launcher'
@@ -51,8 +52,8 @@ def app_asset():
     if not getattr(sys, 'frozen', False):
         return None
     if os.name == 'nt':
-        return 'RunJobs-Setup.exe'
-    return f'RunJobs-mac-{"arm64" if platform.machine() == "arm64" else "x64"}.dmg'
+        return f'{APP}-Setup.exe'
+    return f'{APP}-mac-{"arm64" if platform.machine() == "arm64" else "x64"}.dmg'
 
 
 class Engine:
@@ -122,11 +123,11 @@ class Engine:
         if os.name == 'nt':  # the per-user installer closes this app, updates it and reopens it
             subprocess.Popen([path, '/SILENT', '/SUPPRESSMSGBOXES', '/relaunch=1'])
             return 'installer'
-        bundle = os.path.abspath(os.path.join(sys.executable, '..', '..', '..'))  # .../RunJobs.app
+        bundle = os.path.abspath(os.path.join(sys.executable, '..', '..', '..'))  # the installed .app (any folder name)
         mnt = tempfile.mkdtemp()
         subprocess.run(['hdiutil', 'attach', '-nobrowse', '-quiet', '-mountpoint', mnt, path], check=True)
         try:
-            subprocess.run(['ditto', os.path.join(mnt, 'RunJobs.app'), bundle], check=True)
+            subprocess.run(['ditto', os.path.join(mnt, f'{APP}.app'), bundle], check=True)
         finally:
             subprocess.run(['hdiutil', 'detach', '-quiet', mnt])
         return 'restart'
@@ -195,7 +196,7 @@ class Engine:
         if self.pooled(st):
             return 'pooled'
         if st in ('gpu', 'cpu'):
-            raise Fail('Your hub server is already running (your own work?), so RunJobs leaves it alone. To lend the GPU, '
+            raise Fail(f'Your hub server is already running (your own work?), so {APP} leaves it alone. To lend the GPU, '
                        'stop it on the hub (File > Hub Control Panel > Stop My Server) and press Start again.')
         if self.dry:
             say('[dry-run] would start a GPU server')
@@ -306,12 +307,12 @@ def main(argv):
     except Exception as x:
         raise Fail(f'Cannot read the pool settings ({CONFIG_URL}): {x}')
     if '--update' in argv or e.update_needed():
-        say(f'Updating RunJobs {VERSION} -> {e.config["launcher_version"]}...')
+        say(f'Updating {APP} {VERSION} -> {e.config["launcher_version"]}...')
         e.update()
-        say('PASS updated; please start RunJobs again.' if not dry else '[dry-run] update verified, not installed')
+        say(f'PASS updated; please start {APP} again.' if not dry else '[dry-run] update verified, not installed')
         return 0
     if e.too_old():
-        raise Fail(f'This RunJobs ({VERSION}) is too old (minimum {e.config["min_launcher_version"]}): run RunJobs --update.')
+        raise Fail(f'This {APP} ({VERSION}) is too old (minimum {e.config["min_launcher_version"]}): run it with --update.')
     if not e.saved_login():
         print(f'First time: your StratusGeo hub login (asked once). Token: {TOKEN_PAGE} > Request new API token.')
         e.login(input('  Hub username: '), getpass.getpass('  Hub token (hidden): '))

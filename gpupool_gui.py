@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""RunJobs app: a small Tkinter window around gpupool.Engine (all real work is in gpupool.py).
+"""Hermes: a small Tkinter window around gpupool.Engine (all real work is in gpupool.py).
 
 First run: a setup wizard (welcome, hub login, registration code, one-time terminal paste, self-test, done).
 After that: one big status line, Start, Stop after current job, Update (when a newer version exists), the last jobs
@@ -58,7 +58,7 @@ class App:
         self.root, self.e, self.q = root, engine, queue.Queue()
         self.settings = load_settings()
         self.code, self.screen, self.last, self.poll_job = None, None, {}, None
-        root.title('Run Jobs')
+        root.title(gp.APP)
         root.geometry('560x600')
         root.minsize(520, 560)
         st = ttk.Style()
@@ -132,8 +132,8 @@ class App:
     # ---- setup wizard ----
     def w_welcome(self):
         self.wizard(0, 'Lend your GPU to the team', on_next=self.w_login)
-        self.label('When you have free time, press Start. Your StratusGeo GPU switches on, runs a couple of the team\'s '
-                   'queued experiments and switches itself off. Every log and result is saved to the team cloud and GitHub.')
+        self.label(f'Welcome to {gp.APP}. When you have free time, press Start: your StratusGeo GPU switches on, runs a couple '
+                   'of the team\'s queued experiments and switches itself off. Every log and result is saved to the team cloud and GitHub.')
         self.label('Setup takes about 15 minutes, once. After you press Start you can close this window or shut your laptop.')
         self.label('If Windows showed "Windows protected your PC" when you installed this: that is normal for small team apps. '
                    'Click More info > Run anyway. On a Mac: right-click the app > Open > Open (first time only).', 'Small.TLabel')
@@ -251,7 +251,7 @@ class App:
             return
         if failed or (done and 'FAIL' in done[-1]) or p['status'].startswith('ERROR'):
             self.st_note.configure(text='\n'.join(f'✘ {n}: {w}' for n, w in failed) or p['status'], foreground='#b00020')
-            report = '\n'.join([f'RunJobs self-test for {self.e.user}', p['status']] + lines)
+            report = '\n'.join([f'{gp.APP} self-test for {self.e.user}', p['status']] + lines)
             b = ttk.Button(self.body, text='Copy error for Pranav')
             b.configure(command=lambda: self.copy(report, b))
             b.pack(anchor='w', pady=6)
@@ -322,7 +322,7 @@ class App:
         elif srv == 'gpu' and s:
             big, sub = 'GPU on', s
         else:
-            big, sub = 'Your hub server is on (not lending)', 'RunJobs leaves your own server alone.'
+            big, sub = 'Your hub server is on (not lending)', f'{gp.APP} leaves your own server alone.'
         self.big.configure(text=big)
         self.sub.configure(text=sub)
         self.start_btn.configure(state='normal' if srv == 'off' and not self.e.too_old() else 'disabled')
@@ -356,7 +356,7 @@ class App:
             self.root.bell()
             self.root.deiconify()
             self.root.lift()
-            os_notify('Run Jobs', msg)
+            os_notify(gp.APP, msg)
 
     def start(self):
         self.banner_box.pack_forget()
@@ -382,7 +382,7 @@ class App:
     def update(self):
         self.upd_btn.configure(state='disabled', text='Updating...')
         self.bg(self.e.update, lambda how: self.root.destroy() if how == 'installer'
-                else self.banner('Updated. Please close and open Run Jobs again.'), self.banner)
+                else self.banner(f'Updated. Please close and open {gp.APP} again.'), self.banner)
 
 
 def run(engine=None):
