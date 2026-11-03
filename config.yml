@@ -1,0 +1,13 @@
+# GPU pool settings: every app and every running pool server reads this from the public repo's main branch,
+# so one commit changes it for everyone. Flat `key: value` lines only. `pool publish` rewrites the tag/sha lines.
+jobs_per_launch: 2        # a server stops after this many jobs per Start press (or earlier when the queue is empty)
+min_launcher_version: 1   # older apps refuse to run and show the Update button
+launcher_version: 1
+launcher_tag: v1
+sha256 gpupool.py: -
+sha256 gpupool_gui.py: -
+sha256 boot.sh: -
+sha256 keepalive.sh: -
+sha256 RunJobs-Setup.exe: -
+sha256 RunJobs-mac-arm64.dmg: -
+sha256 RunJobs-mac-x64.dmg: -

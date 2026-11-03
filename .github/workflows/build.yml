@@ -1,0 +1,40 @@
+# Public repo Luxaris/gpupool-launcher: when `pool publish` makes a release, build the self-contained apps on
+# GitHub-hosted runners and attach them to that release. PyInstaller bundles Python + Tkinter; Inno Setup (Windows,
+# preinstalled on windows-latest) and hdiutil (macOS) wrap them in a standard installer. No secrets: GITHUB_TOKEN only.
+name: build
+on:
+  release:
+    types: [published]
+permissions:
+  contents: write  # attach the installers to the release
+jobs:
+  build:
+    strategy:
+      matrix:
+        include:
+          - { os: windows-latest, asset: RunJobs-Setup.exe }
+          - { os: macos-latest, asset: RunJobs-mac-arm64.dmg }
+          - { os: macos-15-intel, asset: RunJobs-mac-x64.dmg }
+    runs-on: ${{ matrix.os }}
+    env:
+      GH_TOKEN: ${{ github.token }}
+      TAG: ${{ github.event.release.tag_name }}
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with: { python-version: '3.13' }
+      - run: pip install pyinstaller
+      - run: pyinstaller --noconfirm --onedir --windowed --name RunJobs gpupool_gui.py
+      - name: Windows installer (Inno Setup)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          & "${env:ProgramFiles(x86)}\Inno Setup 6\iscc.exe" "/DAppVersion=$($env:TAG.TrimStart('v'))" "/DSrcDir=$PWD\dist\RunJobs" "/DOutDir=$PWD\out" installer\RunJobs.iss
+          if ($LASTEXITCODE) { exit 1 }
+          gh release upload $env:TAG "out\${{ matrix.asset }}" --clobber
+      - name: Mac disk image (hdiutil)
+        if: runner.os == 'macOS'
+        run: |
+          mkdir dmg && cp -R dist/RunJobs.app dmg/ && ln -s /Applications dmg/Applications
+          hdiutil create -volname "Run Jobs" -srcfolder dmg -ov -format UDZO "${{ matrix.asset }}"
+          gh release upload "$TAG" "${{ matrix.asset }}" --clobber
