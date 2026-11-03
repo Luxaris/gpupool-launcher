@@ -4,10 +4,10 @@ jobs_per_launch: 2        # a server stops after this many jobs per Start press 
 min_launcher_version: 1   # older apps refuse to run and show the Update button
 launcher_version: 1
 launcher_tag: v1
-sha256 gpupool.py: -
-sha256 gpupool_gui.py: -
-sha256 boot.sh: -
-sha256 keepalive.sh: -
-sha256 RunJobs-Setup.exe: -
-sha256 RunJobs-mac-arm64.dmg: -
-sha256 RunJobs-mac-x64.dmg: -
+sha256 gpupool.py: f8897ea5cf73a91bb3bffe57cc394d6bc64b44a101cbaeced795b12bfe13b45d
+sha256 gpupool_gui.py: afaec86b95aae1f5bdb7369a56eab4df08f0ee037e2b30144410a65cb807c8a4
+sha256 boot.sh: 84e9b4454db94ae16913a4452ecd2d4e7fbce1c1082a9d0742fbd24972568e86
+sha256 keepalive.sh: aabef214a31df9c2c37258fbd7459fae333102f054e380f4e372901b63e39324
+sha256 RunJobs-Setup.exe: 0942408b449ceddf02f9f3ccd43cc085fa94e82be829fd6c6ea74db79c48881d
+sha256 RunJobs-mac-arm64.dmg: adefcba40f572c0f43edd442b8cf5c0a9bf8827d08ce04bc5f685a6d635157bb
+sha256 RunJobs-mac-x64.dmg: 2e30c7a33454c046eb652a6d2da8d081c42cc3aeb432d4ca280d317cdc77b87f
