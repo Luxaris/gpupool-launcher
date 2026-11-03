@@ -2,12 +2,15 @@
 # so one commit changes it for everyone. Flat `key: value` lines only. `pool publish` rewrites the tag/sha lines.
 jobs_per_launch: 2        # a server stops after this many jobs per Start press (or earlier when the queue is empty)
 min_launcher_version: 1   # older apps refuse to run and show the Update button
-launcher_version: 1
-launcher_tag: v1
-sha256 gpupool.py: f8897ea5cf73a91bb3bffe57cc394d6bc64b44a101cbaeced795b12bfe13b45d
-sha256 gpupool_gui.py: afaec86b95aae1f5bdb7369a56eab4df08f0ee037e2b30144410a65cb807c8a4
-sha256 boot.sh: 84e9b4454db94ae16913a4452ecd2d4e7fbce1c1082a9d0742fbd24972568e86
+launcher_version: 2
+launcher_tag: v2
+sha256 gpupool.py: 85d3a703cebf2b27a60fbd68226e0b3ae6c79af9ce9f2d1dc6e8df46c7a43330
+sha256 gpupool_gui.py: 1c93ecd0abdfc51b0b3425ea4ee830893d0de431888ba36277e62eccec09fb10
+sha256 boot.sh: 46994aef6d1bb143d58146194d67a012cc294dbf6f82d35cb8f1269486a2010b
 sha256 keepalive.sh: aabef214a31df9c2c37258fbd7459fae333102f054e380f4e372901b63e39324
-sha256 RunJobs-Setup.exe: 0942408b449ceddf02f9f3ccd43cc085fa94e82be829fd6c6ea74db79c48881d
-sha256 RunJobs-mac-arm64.dmg: adefcba40f572c0f43edd442b8cf5c0a9bf8827d08ce04bc5f685a6d635157bb
-sha256 RunJobs-mac-x64.dmg: 2e30c7a33454c046eb652a6d2da8d081c42cc3aeb432d4ca280d317cdc77b87f
+sha256 RunJobs-Setup.exe: 95b55bca049585648fa42549947f92319688cf78b4416f9d94f98418a796bd11
+sha256 RunJobs-mac-arm64.dmg: 0c4adf2e7d47621159c16e47579bcbd50e7f4b5bdf5946cfd5ee695062c7ef4f
+sha256 RunJobs-mac-x64.dmg: 4b0530294dcdf723bfb752ac64c31922eb81fb9db76bcf2efc8864a18e6f41b8
+sha256 Hermes-mac-arm64.dmg: 094b50210211d4830ed8cc3f58893ebd47b338b964d01b8807962710a398d91e
+sha256 Hermes-mac-x64.dmg: e580e26c976fcab671ad06af3f611bf62caa4a03d6f6ae3d6c0bc9ecaf9999f7
+sha256 Hermes-Setup.exe: 95b55bca049585648fa42549947f92319688cf78b4416f9d94f98418a796bd11
