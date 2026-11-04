@@ -27,7 +27,10 @@ jobs:
       - uses: actions/setup-python@v7
         with: { python-version: '3.13' }
       - run: pip install pyinstaller
-      - run: pyinstaller --noconfirm --onedir --windowed --name Hermes gpupool_gui.py
+      - name: Tray icon packages (Windows only; on a Mac Hermes uses its Dock icon)
+        if: runner.os == 'Windows'
+        run: pip install pystray pillow
+      - run: pyinstaller --noconfirm --onedir --windowed --name Hermes --hidden-import pystray._win32 gpupool_gui.py
       - name: Windows installer (Inno Setup)
         if: runner.os == 'Windows'
         shell: pwsh

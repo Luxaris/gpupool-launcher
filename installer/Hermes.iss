@@ -42,6 +42,11 @@ Name: "desktop"; Description: "Desktop shortcut ""Hermes"""
 Name: "{autoprograms}\Hermes"; Filename: "{app}\Hermes.exe"; Tasks: startmenu
 Name: "{autodesktop}\Hermes"; Filename: "{app}\Hermes.exe"; Tasks: desktop
 
+[Registry]
+; Background mode's start-at-login entry is written by the app itself (only when the teammate turns it on);
+; the uninstaller removes it. Nothing is written at install time.
+Root: HKCU; Subkey: "Software\Microsoft\Windows\CurrentVersion\Run"; ValueName: "Hermes"; ValueType: none; Flags: uninsdeletevalue dontcreatekey
+
 [Run]
 Filename: "{app}\Hermes.exe"; Description: "Open Hermes"; Flags: nowait postinstall skipifsilent
 ; the app's self-update runs this installer with /SILENT /relaunch=1: reopen the app afterwards

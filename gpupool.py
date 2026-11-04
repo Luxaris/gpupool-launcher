@@ -10,7 +10,7 @@ Your hub token stays in a user-only file in your config dir; nothing of Pranav's
 """
 import base64, hashlib, json, os, platform, stat, subprocess, sys, tempfile, time, urllib.error, urllib.request, webbrowser
 
-VERSION = 4
+VERSION = 5
 APP = 'Hermes'
 HUB = 'https://hub.stratusgeo.org'
 TOKEN_PAGE = f'{HUB}/hub/token'
@@ -23,7 +23,8 @@ INSTALL_LINE = 'bash ~/gpupool/boot.sh install'
 CFG_DIR = os.path.join(os.environ.get('APPDATA') or os.path.expanduser('~/.config'), 'gpupool')
 LOGIN = os.path.join(CFG_DIR, 'login.json')
 HISTORY = os.path.join(CFG_DIR, 'history.txt')  # last jobs seen on the server, kept for when it is off
-BUSY = ('Ready', 'Running', 'Done', 'Setting', 'Saving', 'Stopping after')
+BUSY = ('Ready', 'Running', 'Done', 'Setting', 'Saving', 'Stopping after', 'Waiting for jobs')
+QUEUE_URL = f'https://raw.githubusercontent.com/{PUBLIC}/main/queue.json'  # count only, kept current by `pool`
 
 
 class Fail(Exception):
@@ -94,6 +95,16 @@ class Engine:
         if hashlib.sha256(b).hexdigest() != c.get(f'sha256 {name}', ''):
             raise Fail(f'{name} from {c["launcher_tag"]} failed its checksum; not using it. Tell Pranav.')
         return b
+
+    @staticmethod
+    def queue():
+        """The public pool indicator: {'waiting': n, 'set': opaque id of those jobs, 'updated': iso}. No login needed."""
+        try:
+            return json.loads(fetch(QUEUE_URL + f'?t={int(time.time())}', timeout=30))
+        except urllib.error.HTTPError as e:
+            if e.code == 404:  # not published yet
+                return {'waiting': 0, 'set': ''}
+            raise
 
     def update_needed(self):
         return int(self.config.get('launcher_version', VERSION)) > VERSION

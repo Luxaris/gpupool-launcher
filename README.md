@@ -24,4 +24,6 @@ Your hub token stays on your computer, in a file only you can read. Everything r
 - **Update** appears when there is a new version. One click installs it (the file is checked first).
 - **Last jobs** shows ✔ or ✘ for recent jobs. You don't need to do anything about a ✘: Pranav sees it and reruns the job.
 - **Notify me if something fails** is on by default: a red banner (on a Mac, also a notification).
+- **Let Pranav start my GPU (background mode)** is off unless you turn it on. When it's on and this laptop is on, Hermes opens at login and sits in the tray (on a Mac, in the Dock). It starts your GPU by itself when team jobs are waiting or Pranav asks. It never touches a server you started yourself. The tray menu has **Pause for 1 hour**, **Pause until tomorrow**, **Resume** and **Quit**. Turning it off also removes the start-at-login entry.
+- When the queue is empty, your GPU waits about 15 minutes for new jobs before it backs up and switches off.
 - If your GPU slot sits unused for 14 days, GitHub removes it. The app tells you, goes back to Step 2 and asks for a new code. Nothing is reinstalled.

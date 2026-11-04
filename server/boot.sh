@@ -7,8 +7,9 @@
 #   bash ~/gpupool/boot.sh [start]    normal start (Hermes writes ~/gpupool/armed, then opens a terminal via the API)
 #   bash ~/gpupool/boot.sh --check    PASS/FAIL checks (GPU, S3 read, runner registered), then stop this server
 #   bash ~/gpupool/boot.sh --dry-run  the same checks, changes nothing, does not stop the server
-# Stops the server (hub API, as ~/hubq/runner.sh does) after jobs_per_launch jobs (config.yml in the public repo, read
-# at launch and between jobs) or IDLE_S without a job (queue empty), whichever first. Before stopping after jobs it
+# Stops the server (hub API, as ~/hubq/runner.sh does) after jobs_per_launch jobs, or when no job came for
+# idle_wait_minutes (both from config.yml in the public repo, read at launch and between jobs; 0 = the old short wait,
+# IDLE_S), whichever first. The wait never resets the job count. Before stopping after jobs it
 # re-uploads anything the workflow parked in ~/gpupool/unsaved (results it could not confirm in S3) and says so if
 # that still fails. Lifetime: no new job after MAX_S - DRAIN_S (a job arriving later fails fast and `pool recover`
 # reruns it elsewhere; a running job's time is capped so its log + results are saved); stop at MAX_S.
@@ -23,9 +24,14 @@ MODE=${1:-start}
 mkdir -p $G
 
 say() { echo "$*" > $G/status.tmp && mv -f $G/status.tmp $G/status.txt; echo "$(date +%F' '%T) $*"; }
-limit() {  # jobs_per_launch from the shared config; the last known value (or 2) if GitHub is unreachable
-  local v; v=$(curl -fsS -m 20 "$CONFIG_URL?t=$(date +%s)" | sed -n 's/^jobs_per_launch: *\([0-9][0-9]*\).*/\1/p') || v=""
-  [ -n "$v" ] && echo "$v" > $G/jobs_per_launch; cat $G/jobs_per_launch 2> /dev/null || echo 2
+cfg() {  # cfg <key> <default>: a number from the shared config; the last known value (or the default) if GitHub is unreachable
+  local v; v=$(curl -fsS -m 20 "$CONFIG_URL?t=$(date +%s)" | sed -n "s/^$1: *\([0-9][0-9]*\).*/\1/p") || v=""
+  [ -n "$v" ] && echo "$v" > "$G/$1"; cat "$G/$1" 2> /dev/null || echo "$2"
+}
+read_config() {  # sets max_jobs and wait_s
+  max_jobs=$(cfg jobs_per_launch 2)
+  local m; m=$(cfg idle_wait_minutes 15)
+  if [ "$m" -gt 0 ]; then wait_s=$((m * 60)); else wait_s=$IDLE_S; fi
 }
 confirm_saved() {  # never stop silently with unconfirmed results: retry what the workflow parked in ~/gpupool/unsaved
   local d left=0 aws=/srv/conda/envs/notebook/bin/aws
@@ -95,24 +101,29 @@ if [ -s $G/regtoken ] || [ ! -f $R/.runner ]; then  # GitHub's documented instal
 fi
 touch $G/registered  # Hermes checks this (the Jupyter API cannot read hidden files like .runner)
 pgrep -f "$R/bin/Runner.Listener" > /dev/null || (cd $R && nohup ./run.sh >> $G/runner.out 2>&1 < /dev/null &)
-max_jobs=$(limit)
+read_config
+bash $G/keepalive.sh $$ >> $G/keepalive.log 2>&1 &  # hub activity every 10 min for as long as this watchdog runs (jobs + waiting)
 say "Ready: your GPU takes up to $max_jobs job(s) from the queue. You can close this window."
-idle_since=$START; wpid=""; n=0; restarts=0
+idle_since=$START; wpid=""; wname=""; n=0; restarts=0
 while sleep 10; do
   now=$(date +%s); age=$((now - START))
   [ $age -ge "$MAX_S" ] && hub_stop "Reached the $((MAX_S / 3600)) h server limit, stopping your GPU. Thanks!"
   w=$(pgrep -f "$R/bin/Runner.Worker" | head -1 || true)
-  if [ -n "$w" ]; then  # a job is running: keep the hub from idle-stopping us (hubq's keepalive.sh)
-    [ "$w" != "$wpid" ] && { wpid=$w; n=$((n + 1)); bash $G/keepalive.sh "$w" >> $G/keepalive.log 2>&1 & }
-    say "Running job $n of up to $max_jobs: $(cat $G/current 2> /dev/null || echo '?')$([ -e $G/stop ] && echo ' (stopping after this job)')"
+  if [ -n "$w" ]; then  # a job is running
+    [ "$w" != "$wpid" ] && { wpid=$w; rm -f $G/current; }
+    wname=$(cat $G/current 2> /dev/null || true)  # written by the workflow's run step
+    say "Running job $((n + 1)) of up to $max_jobs: ${wname:-starting...}$([ -e $G/stop ] && echo ' (stopping after this job)')"
     idle_since=$now; continue
   fi
-  wpid=""
+  if [ -n "$wpid" ]; then  # a job just ended; self-tests do not count toward jobs_per_launch
+    case "$wname" in selftest-*) ;; *) n=$((n + 1)) ;; esac
+    wpid=""; wname=""
+  fi
   [ -e $G/stop ] && hub_stop "Stopped after the current job, as you asked.$(confirm_saved) Thanks!"
-  if [ $n -gt 0 ] && [ $((now - idle_since)) -lt 15 ]; then max_jobs=$(limit); fi  # re-read the shared config between jobs
+  if [ $n -gt 0 ] && [ $((now - idle_since)) -lt 15 ]; then read_config; fi  # re-read the shared config between jobs
   [ $n -ge "$max_jobs" ] && hub_stop "Done $n job(s), this launch's share.$(confirm_saved) Stopping your GPU. Thanks!"
   [ $age -ge $((MAX_S - DRAIN_S)) ] && hub_stop "Close to the $((MAX_S / 3600)) h server limit.$(confirm_saved) Stopping your GPU. Thanks!"
-  [ $((now - idle_since)) -ge "$IDLE_S" ] && hub_stop "Queue empty.$(confirm_saved) Stopping your GPU. Thanks!"
+  [ $((now - idle_since)) -ge "$wait_s" ] && hub_stop "Queue empty.$(confirm_saved) Stopping your GPU. Thanks!"
   if ! pgrep -f "$R/bin/Runner.Listener" > /dev/null; then
     if grep -qiE 'registration has been deleted|runner is not configured|registration.*not found' $G/runner.out 2> /dev/null; then
       : > $G/runner.out; rm -f $G/registered  # GitHub removes runners unused for 14 days; the binaries stay, only a new code is needed
@@ -122,5 +133,6 @@ while sleep 10; do
     [ $restarts -gt 3 ] && { rm -f $R/.runner $G/registered; hub_stop "ERROR: the job runner keeps stopping (~/gpupool/runner.out). Ask Pranav for a new registration code and run again."; }
     (cd $R && nohup ./run.sh >> $G/runner.out 2>&1 < /dev/null &)
   fi
-  [ $n -eq 0 ] && say "Ready: your GPU takes up to $max_jobs job(s) from the queue. You can close this window." || say "Done $n of up to $max_jobs job(s). Waiting for the next one..."
+  left=$(( (wait_s - (now - idle_since) + 59) / 60 ))
+  say "Waiting for jobs (stops in $left min). $([ $n -eq 0 ] && echo "Takes up to $max_jobs job(s)." || echo "Done $n of up to $max_jobs.") You can close this window."
 done

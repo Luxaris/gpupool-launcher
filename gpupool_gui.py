@@ -4,6 +4,9 @@
 First run: a setup wizard (welcome, hub login, registration code, one-time terminal paste, self-test, done).
 After that: one big status line, Start, Stop after current job, Update (when a newer version exists), the last jobs
 with a check or a cross, and a "notify me if something fails" switch (an in-window banner; also a macOS notification).
+Background mode (opt-in, off by default): Hermes starts at login (Windows: HKCU Run value; Mac: a user LaunchAgent),
+sits in the tray (Windows, pystray; on a Mac the Dock icon instead: pystray and Tk both need the Mac main thread)
+and every 5 min reads the public, count-only queue.json; jobs waiting + GPU off = the same launch as Start.
 Engine calls run in a worker thread; the window never blocks. Closing the window changes nothing on the server.
 """
 import json, os, queue, subprocess, sys, threading, time, tkinter as tk, webbrowser
@@ -53,14 +56,90 @@ def os_notify(title, msg):
         subprocess.run(['osascript', '-e', f'display notification {json.dumps(msg)} with title {json.dumps(title)}'], check=False)
 
 
+BG_EVERY_S = 120
+HEARTBEAT_S = 1800
+WAKE_VALID_S = 3600  # a `pool wake` request older than this is ignored (the laptop was off or asleep at the time)
+RUN_KEY = r'Software\Microsoft\Windows\CurrentVersion\Run'
+AGENT = os.path.expanduser('~/Library/LaunchAgents/org.teamsound.hermes.plist')
+try:  # Windows tray icon; optional (no tray -> the window just minimises)
+    if os.name != 'nt':
+        raise ImportError
+    import pystray
+    from PIL import Image, ImageDraw
+except ImportError:
+    pystray = None
+
+
+def launch_cmd():
+    """How the OS should start Hermes at login: the installed app, or this script with pythonw."""
+    if getattr(sys, 'frozen', False):
+        return [sys.executable, '--background']
+    py = sys.executable.replace('python.exe', 'pythonw.exe') if os.name == 'nt' else sys.executable
+    return [py, os.path.abspath(__file__), '--background']
+
+
+def set_autostart(on):
+    """Start at login for this user only. Turning it off removes the entry (the uninstaller removes it too)."""
+    if os.name == 'nt':
+        import winreg
+        with winreg.OpenKey(winreg.HKEY_CURRENT_USER, RUN_KEY, 0, winreg.KEY_SET_VALUE) as k:
+            if on:
+                winreg.SetValueEx(k, gp.APP, 0, winreg.REG_SZ, subprocess.list2cmdline(launch_cmd()))
+            else:
+                try:
+                    winreg.DeleteValue(k, gp.APP)
+                except FileNotFoundError:
+                    pass
+    elif sys.platform == 'darwin':
+        import plistlib
+        if on:
+            os.makedirs(os.path.dirname(AGENT), exist_ok=True)
+            with open(AGENT, 'wb') as f:
+                plistlib.dump({'Label': 'org.teamsound.hermes', 'ProgramArguments': launch_cmd(), 'RunAtLoad': True}, f)
+        elif os.path.exists(AGENT):
+            os.remove(AGENT)
+
+
+def wake_time(q, user):
+    """Latest `pool wake` request for this user (or 'all'), as epoch seconds; 0 if none."""
+    ts = [v for k, v in (q.get('wake') or {}).items() if k in (user, 'all')]
+    try:
+        return max(datetime.fromisoformat(t.replace('Z', '+00:00')).timestamp() for t in ts) if ts else 0
+    except ValueError:
+        return 0
+
+
+def should_autostart(q, settings, server, now, user=''):
+    """Background decision, kept pure for tests: start when (new waiting jobs, or a fresh `pool wake` for this user)
+    and the hub server is off and not paused. One automatic start per new set of waiting jobs / per wake request, so a
+    stale indicator (or jobs nobody can take) costs at most one start, never a start-stop loop."""
+    if not settings.get('background') or settings.get('paused_until', 0) > now or server != 'off':
+        return False
+    jobs = int(q.get('waiting', 0)) > 0 and q.get('set', '') != settings.get('last_auto_set')
+    w = wake_time(q, user)
+    return jobs or (w > settings.get('last_wake', 0) and now - w < WAKE_VALID_S)
+
+
+def tomorrow_morning(now):
+    t = datetime.fromtimestamp(now).replace(hour=7, minute=0, second=0, microsecond=0)
+    return (t.timestamp() + 86400) if t.timestamp() <= now else t.timestamp()
+
+
+def tray_image(state):
+    """A dot: green = GPU on, orange = paused, grey = idle."""
+    img = Image.new('RGBA', (64, 64), (0, 0, 0, 0))
+    ImageDraw.Draw(img).ellipse((6, 6, 58, 58), fill={'gpu': '#1b9e4b', 'paused': '#e08a00'}.get(state, '#8a8a8a'))
+    return img
+
+
 class App:
     def __init__(self, root, engine):
         self.root, self.e, self.q = root, engine, queue.Queue()
         self.settings = load_settings()
         self.code, self.screen, self.last, self.poll_job = None, None, {}, None
         root.title(gp.APP)
-        root.geometry('560x600')
-        root.minsize(520, 560)
+        root.geometry('560x660')
+        root.minsize(520, 620)
         st = ttk.Style()
         st.configure('Big.TLabel', font=('Segoe UI', 17, 'bold'))
         st.configure('H.TLabel', font=('Segoe UI', 14, 'bold'))
@@ -73,6 +152,110 @@ class App:
         self.body = ttk.Frame(root, padding=24)
         self.body.pack(fill='both', expand=True)
         root.after(100, self._pump)
+        self.tray, self.tray_state = None, None
+        root.protocol('WM_DELETE_WINDOW', self.on_close)
+        if self.settings.get('background'):
+            self.start_tray()
+        root.after(60 * 1000, self._bg_tick)
+
+    # ---- background mode: autostart at login, tray, queue check every 5 min ----
+    def on_close(self):
+        if not self.settings.get('background'):
+            self.quit()
+        elif self.tray:
+            self.root.withdraw()  # keeps running in the tray
+        else:
+            self.root.iconify()  # Mac / no tray: keeps running in the Dock
+
+    def show(self):
+        self.root.deiconify()
+        self.root.lift()
+        if self.screen == 'main':
+            self.refresh()
+
+    def quit(self):
+        if self.tray:
+            self.tray.stop()
+        self.root.destroy()
+
+    def visible(self):
+        return self.root.state() == 'normal'
+
+    def toggle_background(self):
+        on = self.bg_var.get()
+        try:
+            set_autostart(on)
+        except OSError as x:
+            self.bg_var.set(not on)
+            self.banner(f'Could not change the start-at-login setting: {x}', retry=False)
+            return
+        self.settings['background'] = on
+        save_settings(self.settings)
+        self.start_tray() if on else self.stop_tray()
+        self.heartbeat(force=True)
+
+    def heartbeat(self, force=False):
+        """'<hub user> background on|off' to the public ntfy topic in config.yml, so Pranav's `pool status` can show who
+        lets him start their GPU. Status only (no secrets, anyone can read or fake it); every 30 min while on."""
+        topic = (self.e.config or {}).get('heartbeat_topic')
+        if not topic or not self.e.user or not (force or time.time() - self.settings.get('last_heartbeat', 0) > HEARTBEAT_S):
+            return
+        self.settings['last_heartbeat'] = time.time()
+        msg = f'{self.e.user} background {"on" if self.settings.get("background") else "off"} v{gp.VERSION}'.encode()
+        self.bg(lambda: gp.fetch(f'https://ntfy.sh/{topic}', data=msg, method='POST', timeout=15), None, lambda m: None)
+
+    def pause(self, until):
+        self.settings['paused_until'] = until
+        save_settings(self.settings)
+        self.set_tray_state(self.tray_state)
+
+    def start_tray(self):
+        if not pystray or self.tray:
+            return
+        post = lambda f: (lambda *_: self.q.put((lambda _: f(), None)))  # tray thread -> Tk thread
+        menu = pystray.Menu(
+            pystray.MenuItem('Open', post(self.show), default=True),
+            pystray.MenuItem('Pause for 1 hour', post(lambda: self.pause(time.time() + 3600))),
+            pystray.MenuItem('Pause until tomorrow', post(lambda: self.pause(tomorrow_morning(time.time())))),
+            pystray.MenuItem('Resume', post(lambda: self.pause(0))),
+            pystray.MenuItem('Quit', post(self.quit)))
+        self.tray = pystray.Icon(gp.APP, tray_image('idle'), gp.APP, menu)
+        self.tray.run_detached()
+
+    def stop_tray(self):
+        if self.tray:
+            self.tray.stop()
+            self.tray = None
+
+    def set_tray_state(self, server):
+        self.tray_state = server
+        paused = self.settings.get('paused_until', 0) > time.time()
+        state = 'paused' if paused else 'gpu' if server in ('gpu', 'pending') else 'idle'
+        text = {'paused': f'{gp.APP}: paused', 'gpu': f'{gp.APP}: GPU on', 'idle': f'{gp.APP}: waiting for team jobs'}[state]
+        if self.tray:
+            self.tray.icon, self.tray.title = tray_image(state), text
+        elif self.settings.get('background'):
+            self.root.title(text)  # Mac: the Dock / window title shows the state
+
+    def _bg_tick(self):
+        self.root.after(BG_EVERY_S * 1000, self._bg_tick)
+        if not self.settings.get('background') or not self.settings.get('setup_done') or not self.e.user:
+            return
+        self.heartbeat()
+        self.bg(lambda: (self.e.queue(), self.e.state()), self._bg_decide, lambda m: None)
+
+    def _bg_decide(self, qs):
+        q, server = qs
+        self.set_tray_state(server)
+        now = time.time()
+        if self.screen != 'main' or not should_autostart(q, self.settings, server, now, self.e.user):
+            return
+        if self.e.config and self.e.too_old():  # (the Start button state may be stale while hidden in the tray)
+            return
+        self.settings['last_auto_set'] = q.get('set', '')
+        self.settings['last_wake'] = max(self.settings.get('last_wake', 0), wake_time(q, self.e.user))
+        save_settings(self.settings)
+        self.start()
 
     # ---- background work: fn runs in a thread, done(result) / fail(message) run in the Tk thread ----
     def bg(self, fn, done=None, fail=None):
@@ -315,6 +498,11 @@ class App:
         self.notify_var = tk.BooleanVar(value=self.settings.get('notify', True))
         ttk.Checkbutton(self.body, text='Notify me if something fails', variable=self.notify_var,
                         command=lambda: (self.settings.update(notify=self.notify_var.get()), save_settings(self.settings))).pack(side='bottom', anchor='w')
+        self.label('When this laptop is on, Hermes starts your GPU by itself whenever team jobs are waiting or Pranav asks.',
+                   'Small.TLabel', side='bottom', pady=(0, 8))
+        self.bg_var = tk.BooleanVar(value=bool(self.settings.get('background')))
+        ttk.Checkbutton(self.body, text='Let Pranav start my GPU (background mode)', variable=self.bg_var,
+                        command=self.toggle_background).pack(side='bottom', anchor='w')
         self.bg(self.e.load_config, lambda _: self._config_loaded(), lambda m: self.sub.configure(text=f'(cannot check for updates: {m})'))
         self.refresh()
 
@@ -327,7 +515,8 @@ class App:
 
     def refresh(self):
         if self.screen == 'main':
-            self.bg(self.e.poll, self._show, lambda m: self.sub.configure(text=f'(cannot reach the hub: {m})'))
+            if self.visible():  # hidden in the tray: the 5-min background tick keeps the state fresh instead
+                self.bg(self.e.poll, self._show, lambda m: self.sub.configure(text=f'(cannot reach the hub: {m})'))
             self.poll_job = self.root.after(POLL_S * 1000, self.refresh)
 
     def _show(self, p):
@@ -344,6 +533,9 @@ class App:
         elif s.startswith('Running job'):
             head, _, job = s.partition(': ')
             big, sub = f'{head.replace("up to ", "")} · GPU on', job
+        elif s.startswith('Waiting for jobs'):  # "Waiting for jobs (stops in 12 min). Done 1 of up to 2. ..."
+            head, _, rest = s.partition('. ')
+            big, sub = head, rest
         elif srv == 'gpu' and s:
             big, sub = 'GPU on', s
         else:
@@ -417,6 +609,8 @@ def run(engine=None):
     app.bg(e.load_config, app._startup_config, lambda m: None)  # update check before the wizard, too
     if e.saved_login() and load_settings().get('setup_done'):
         app.main()
+        if '--background' in sys.argv and app.settings.get('background'):  # started at login: straight to the tray/Dock
+            app.on_close()
     else:
         app.w_welcome()
     root.mainloop()
