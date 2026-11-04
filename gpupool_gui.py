@@ -275,8 +275,8 @@ class App:
         post = lambda f: (lambda *_: self.q.put((lambda _: f(), None)))  # tray thread -> Tk thread
         menu = pystray.Menu(
             pystray.MenuItem('Open', post(self.show), default=True),
-            pystray.MenuItem('Pause for 1 hour', post(lambda: self.pause(time.time() + 3600))),
-            pystray.MenuItem('Pause until tomorrow', post(lambda: self.pause(tomorrow_morning(time.time())))),
+            pystray.MenuItem('Pause for 1 hour', post(lambda: self.pause(gp.now() + 3600))),
+            pystray.MenuItem('Pause until tomorrow', post(lambda: self.pause(tomorrow_morning(gp.now())))),
             pystray.MenuItem('Resume', post(lambda: self.pause(0))),
             pystray.MenuItem('Keep my server (2 h)', post(self.keep_server)),
             pystray.MenuItem('Quit', post(self.quit)))
@@ -290,7 +290,7 @@ class App:
 
     def set_tray_state(self, server):
         self.tray_state = server
-        paused = self.settings.get('paused_until', 0) > time.time()
+        paused = self.settings.get('paused_until', 0) > gp.now()
         state = 'paused' if paused else 'gpu' if server in ('gpu', 'pending') else 'idle'
         text = {'paused': f'{gp.APP}: paused', 'gpu': f'{gp.APP}: GPU on', 'idle': f'{gp.APP}: waiting for team jobs'}[state]
         if self.tray:
@@ -305,18 +305,35 @@ class App:
         on = bool(self.settings.get('background'))
         if on:
             self.heartbeat()
-        # every 2 min, background mode on or off: the queue, and one safety look at the hub server (server_action)
-        limit = 60 * int((self.e.config or {}).get('stuck_stop_minutes', 30))
-        self.bg(lambda: (self.e.queue() if on else {}, self.e.server_check(limit)), self._bg_decide,
-                lambda m: self.note(f'check failed: {m}'))
+        # every 2 min, background mode on or off: fresh settings (v9 read them hourly, so a remote change came too
+        # late), the queue, and one safety look at the hub server (server_action)
+        def look():
+            self.refresh_config()
+            return self.e.queue() if on else {}, self.e.server_check(self.stuck_limit())
+        self.bg(look, self._bg_decide, lambda m: self.note(f'check failed: {m}'))
+
+    def refresh_config(self):
+        try:
+            self.e.load_config()
+        except Exception as x:  # keep the last settings; GitHub hiccups must not stop the checks
+            log_line(f'config re-read failed: {type(x).__name__}: {x}')
+
+    def stuck_limit(self):
+        return 60 * int((self.e.config or {}).get('stuck_stop_minutes', 30))
+
+    def still_due(self, info):
+        """Right before taking over or stopping a server that is not Hermes's own launch: re-read config.yml (Pranav
+        may just have raised stuck_stop_minutes) and check again that the server is idle long enough."""
+        self.refresh_config()
+        return info['own'] or info['idle'] >= self.stuck_limit()
 
     def _bg_decide(self, qs):
         q, info = qs
         self.cur_server = info.get('started', '')  # for "Keep my server"
         server = info['st']
         self.set_tray_state(server)
-        now = time.time()
-        limit = 60 * int((self.e.config or {}).get('stuck_stop_minutes', 30))
+        now = gp.now()  # real time: wake requests and hub times come from other clocks
+        limit = self.stuck_limit()
         if server in ('gpu', 'cpu') and not self.starting and not self.taking_over:
             return self.take_control(info, now, limit)
         if not self.settings.get('background'):
@@ -382,19 +399,25 @@ class App:
             self.taking_over = True
             self.note(f'taking over the server for pool jobs ({r["tries"]}/3)')
 
-            def ok(_):
+            def ok(res):
                 self.taking_over = False
+                if res == 'alive':  # the final clock-free check found boot.sh running: not a stuck server after all
+                    r['tries'] -= 1
+                    save_settings(self.settings)
+                    return self.note('pool watchdog is running after all: left alone')
                 self.note('took over the server: pool watchdog started')
 
             def bad(m):
                 self.taking_over = False
                 self.note(f'take-over failed ({r["tries"]}/3): {m}')
-            self.bg(self.e.adopt, ok, bad)
+            self.bg(lambda: self.guarded(info, self.e.adopt), ok, bad)
         elif act == 'stop':
             self.taking_over = True
 
-            def stopped(_):
+            def stopped(res):
                 self.taking_over = False
+                if res == 'alive':
+                    return self.note('pool watchdog is running after all: not stopped')
                 self.note(f'stopped: no runner, idle {mins} min')
                 if self.settings.get('background'):
                     self.settings['fresh_start'] = True  # a controlled server takes its place on the next check
@@ -405,9 +428,18 @@ class App:
             def failed(m):
                 self.taking_over = False
                 self.note(f'could not stop the idle server: {m}')
-            self.bg(self.e.stop_server, stopped, failed)
+            self.bg(lambda: self.guarded(info, self.e.stop_server), stopped, failed)
         self.settings['rogue'] = r
         save_settings(self.settings)
+
+    def guarded(self, info, action):
+        """Worker side of a take-over / stop: only if still due with fresh settings, and boot.sh really is not running."""
+        if not self.still_due(info):
+            return 'alive'  # (reported like 'running after all': nothing was done)
+        if self.e.boot_alive_strict():
+            return 'alive'
+        action()
+        return 'done'
 
     def keep_server(self):
         """'Keep my server': leave the current hub server alone for 2 h."""
@@ -415,7 +447,7 @@ class App:
         cur = getattr(self, 'cur_server', '')
         if cur and r.get('server') != cur:
             r = {'server': cur}
-        r['keep_until'] = time.time() + KEEP_S
+        r['keep_until'] = gp.now() + KEEP_S
         r.pop('warned_at', None)
         self.settings['rogue'] = r
         save_settings(self.settings)
@@ -578,12 +610,12 @@ class App:
         """Nothing the teammate is doing gets cut off: not mid-wizard, no Start in flight, no background start in the
         last 15 min, no install already running. A job on the GPU is never affected (it runs on the hub server)."""
         return (self.screen in ('main', 'wizard0') and not self.starting and not self.updating
-                and time.time() - self.auto_started_at > 900)
+                and gp.now() - self.auto_started_at > 900)
 
     def _update_decide(self):
         if self.screen == 'main':
             self._config_loaded()
-        if should_auto_update(self.e, self.settings, time.time(), self.safe_to_update()):
+        if should_auto_update(self.e, self.settings, gp.now(), self.safe_to_update()):
             self.install_update()
         elif self.e.update_needed() and (not self.e.auto_update() or self.settings.get('update_error')):
             self.offer_manual(self.settings.get('update_error'))
@@ -591,7 +623,7 @@ class App:
     def install_update(self):
         """Silent install of the pinned version, then the new copy starts (--updated) and this one quits."""
         v = self.e.config['launcher_version']
-        self.settings['update_try'] = {'v': v, 't': time.time()}  # one attempt per version per day, set BEFORE trying
+        self.settings['update_try'] = {'v': v, 't': gp.now()}  # one attempt per version per day, set BEFORE trying
         save_settings(self.settings)
         self.updating = True
         self.notice(f'Updating {gp.APP} to v{v}...')

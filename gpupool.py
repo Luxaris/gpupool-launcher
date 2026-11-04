@@ -11,7 +11,7 @@ Your hub token stays in a user-only file in your config dir; nothing of Pranav's
 import base64, hashlib, json, os, platform, stat, subprocess, sys, tempfile, time, urllib.error, urllib.request, webbrowser
 from datetime import datetime
 
-VERSION = 9
+VERSION = 10
 APP = 'Hermes'
 HUB = 'https://hub.stratusgeo.org'
 TOKEN_PAGE = f'{HUB}/hub/token'
@@ -33,10 +33,30 @@ class Fail(Exception):
     """A step failed; the message is meant for the teammate."""
 
 
+_SKEW = [0.0]  # (true time) - (this laptop's clock), from the last HTTP Date header seen
+
+
 def fetch(url, headers=None, data=None, method=None, timeout=60):
     req = urllib.request.Request(url, data=data, method=method, headers=headers or {})
     with urllib.request.urlopen(req, timeout=timeout) as r:
+        _note_date(r.headers.get('Date'))
         return r.read()
+
+
+def _note_date(value):
+    """Learn the real time from a server's Date header (hub, Jupyter, GitHub all send one)."""
+    try:
+        from email.utils import parsedate_to_datetime
+        _SKEW[0] = parsedate_to_datetime(value).timestamp() - time.time()
+    except (TypeError, ValueError, IndexError):
+        pass
+
+
+def now():
+    """The real time, not this laptop's clock. Every comparison with a hub, server or GitHub timestamp uses this:
+    a laptop clock an hour off (e.g. set by hand around BC's 2026 time change) once made a healthy pool server look
+    'idle 61 min, no runner' (v9)."""
+    return time.time() + _SKEW[0]
 
 
 def _ts(iso, default=None):
@@ -135,7 +155,7 @@ class Engine:
             t = datetime.fromisoformat(self.config['launcher_published'].replace('Z', '+00:00')).timestamp()
         except (KeyError, ValueError):
             return False
-        return (now or time.time()) - t >= 60 * int(self.config.get('min_update_age_minutes', 30))
+        return (now or globals()['now']()) - t >= 60 * int(self.config.get('min_update_age_minutes', 30))
 
     def update(self, relaunch=True, hidden=False):
         """Install the pinned, sha256-checked version, then (relaunch=True) start the new copy with --updated and return
@@ -187,7 +207,7 @@ class Engine:
             h['Content-Type'] = 'application/json'
             data = json.dumps(body).encode()
         if self.user and url.startswith(self.base):  # our own calls into the server also count as "activity" on the hub
-            self.probes = (getattr(self, 'probes', []) + [time.time()])[-50:]
+            self.probes = (getattr(self, 'probes', []) + [now()])[-50:]
         b = fetch(url, h, data, method)
         return b if raw else (json.loads(b) if b else None)
 
@@ -220,9 +240,22 @@ class Engine:
         """boot.sh rewrites ~/gpupool/status.txt every 10 s while it runs: fresh = the pool watchdog is alive."""
         try:
             m = self.api('GET', f'{self.base}/api/contents/gpupool/status.txt?content=0')['last_modified']
-            return time.time() - datetime.fromisoformat(m.replace('Z', '+00:00')).timestamp() < 180
+            return now() - _ts(m) < 180  # real time (Date header of this very reply), not the laptop clock
         except (urllib.error.HTTPError, KeyError, ValueError, TypeError):
             return False
+
+    def boot_alive_strict(self, gap=15):
+        """Final check before Hermes takes over or stops a server: status.txt written again within `gap` s (two looks,
+        compared with each other only: no clocks involved), or fresh by the server's own clock."""
+        def mtime():
+            try:
+                return self.api('GET', f'{self.base}/api/contents/gpupool/status.txt?content=0')['last_modified']
+            except (urllib.error.HTTPError, KeyError, TypeError):
+                return None
+        first = mtime()
+        time.sleep(gap)
+        second = mtime()
+        return (first is not None and second != first) or self.boot_alive()
 
     def own_server(self, rec=None):
         """True when Hermes itself started the server that is up now (spawn time noted on this laptop, matched
@@ -242,7 +275,7 @@ class Engine:
     def user_idle(self, rec, now=None):
         """Seconds since someone last USED the server: the hub's last_activity, except bumps our own API calls into the
         server caused (the hub folds proxy traffic into last_activity up to ~5 min late). Starts at the server's start."""
-        now = now or time.time()
+        now = now or globals()['now']()
         key = rec.get('started', '')
         seen = getattr(self, 'user_act', {})
         last = seen.get(key) or _ts(key, now)
@@ -326,7 +359,7 @@ class Engine:
                     'First start can take ~10-15 min while the hub downloads the software; trying again...')
                 os.makedirs(CFG_DIR, exist_ok=True)
                 with open(SPAWNED, 'w') as f:  # lets a later check finish this launch (own_server)
-                    json.dump({'t': time.time()}, f)
+                    json.dump({'t': now()}, f)
                 try:
                     self.api('POST', f'{HUB}/hub/api/users/{self.user}/server', GPU_OPTS)
                 except urllib.error.HTTPError as e:
