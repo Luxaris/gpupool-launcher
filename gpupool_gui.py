@@ -59,6 +59,8 @@ def os_notify(title, msg):
 BG_EVERY_S = 120
 HEARTBEAT_S = 1800
 WAKE_VALID_S = 3600  # a `pool wake` request older than this is ignored (the laptop was off or asleep at the time)
+UPDATE_EVERY_S = 3600  # config.yml re-check for a newer Hermes (also at every app start)
+UPDATE_RETRY_S = 86400  # at most one automatic install attempt per version per day
 RUN_KEY = r'Software\Microsoft\Windows\CurrentVersion\Run'
 AGENT = os.path.expanduser('~/Library/LaunchAgents/org.teamsound.hermes.plist')
 try:  # Windows tray icon; optional (no tray -> the window just minimises)
@@ -120,6 +122,17 @@ def should_autostart(q, settings, server, now, user=''):
     return jobs or (w > settings.get('last_wake', 0) and now - w < WAKE_VALID_S)
 
 
+def should_auto_update(e, settings, now, safe):
+    """Pure, for tests: a newer pinned version, auto_update on, released long enough ago, not already tried today,
+    and a safe moment (see App.safe_to_update)."""
+    if not e.config or not e.update_needed() or not e.auto_update() or not e.release_age_ok(now):
+        return False
+    tried = settings.get('update_try') or {}
+    if str(tried.get('v')) == str(e.config['launcher_version']) and now - tried.get('t', 0) < UPDATE_RETRY_S:
+        return False
+    return safe
+
+
 def tomorrow_morning(now):
     t = datetime.fromtimestamp(now).replace(hour=7, minute=0, second=0, microsecond=0)
     return (t.timestamp() + 86400) if t.timestamp() <= now else t.timestamp()
@@ -153,10 +166,12 @@ class App:
         self.body.pack(fill='both', expand=True)
         root.after(100, self._pump)
         self.tray, self.tray_state = None, None
+        self.starting, self.updating, self.auto_started_at = False, False, 0.0
         root.protocol('WM_DELETE_WINDOW', self.on_close)
         if self.settings.get('background'):
             self.start_tray()
         root.after(60 * 1000, self._bg_tick)
+        root.after(UPDATE_EVERY_S * 1000, self._update_tick)
 
     # ---- background mode: autostart at login, tray, queue check every 5 min ----
     def on_close(self):
@@ -255,6 +270,7 @@ class App:
         self.settings['last_auto_set'] = q.get('set', '')
         self.settings['last_wake'] = max(self.settings.get('last_wake', 0), wake_time(q, self.e.user))
         save_settings(self.settings)
+        self.auto_started_at = time.time()
         self.start()
 
     # ---- background work: fn runs in a thread, done(result) / fail(message) run in the Tk thread ----
@@ -315,7 +331,7 @@ class App:
     # ---- setup wizard ----
     def w_welcome(self):
         self.wizard(0, 'Lend your GPU to the team', on_next=self.w_login)
-        self.welcome_update = ttk.Frame(self.body)  # filled by _startup_config when a newer version exists
+        self.welcome_update = ttk.Frame(self.body)  # update notices / the manual Update fallback (offer_manual, notice)
         self.welcome_update.pack(fill='x')
         self.label(f'Welcome to {gp.APP}. When you have free time, press Start: your StratusGeo GPU switches on, runs a couple '
                    'of the team\'s queued experiments and switches itself off. Every log and result is saved to the team cloud and GitHub.')
@@ -382,18 +398,72 @@ class App:
         if m:
             self.q.put((lambda t: self.screen == 'wizard3' and self.step_msg.configure(text=t), m))
 
-    def _startup_config(self, _):
-        """Runs once when the app opens: offer the update on the first wizard screen too (the main view checks itself)."""
-        if self.screen != 'wizard0' or not (self.e.update_needed() or self.e.too_old()):
-            return
-        ttk.Label(self.welcome_update, text=f'A newer {gp.APP} (v{self.e.config["launcher_version"]}) is available.',
-                  style='Banner.TLabel').pack(side='left', fill='x', expand=True)
-        b = ttk.Button(self.welcome_update, text='Update now', style='Main.TButton')
-        b.configure(command=lambda: (b.configure(state='disabled', text='Updating...'),
-                                     self.bg(self.e.update, lambda how: self.root.destroy() if how == 'installer'
-                                             else self.err.configure(text=f'Updated. Please close and open {gp.APP} again.'))))
-        b.pack(side='right', padx=(6, 0))
-        self.welcome_update.pack_configure(pady=(0, 12))
+    # ---- automatic updates: config checked at start and hourly; installed only when safe, once a day per version ----
+    def check_updates(self):
+        self.bg(self.e.load_config, lambda _: self._update_decide(), lambda m: None)
+
+    def _update_tick(self):
+        self.root.after(UPDATE_EVERY_S * 1000, self._update_tick)
+        self.check_updates()
+
+    def safe_to_update(self):
+        """Nothing the teammate is doing gets cut off: not mid-wizard, no Start in flight, no background start in the
+        last 15 min, no install already running. A job on the GPU is never affected (it runs on the hub server)."""
+        return (self.screen in ('main', 'wizard0') and not self.starting and not self.updating
+                and time.time() - self.auto_started_at > 900)
+
+    def _update_decide(self):
+        if self.screen == 'main':
+            self._config_loaded()
+        if should_auto_update(self.e, self.settings, time.time(), self.safe_to_update()):
+            self.install_update()
+        elif self.e.update_needed() and (not self.e.auto_update() or self.settings.get('update_error')):
+            self.offer_manual(self.settings.get('update_error'))
+
+    def install_update(self):
+        """Silent install of the pinned version, then the new copy starts (--updated) and this one quits."""
+        v = self.e.config['launcher_version']
+        self.settings['update_try'] = {'v': v, 't': time.time()}  # one attempt per version per day, set BEFORE trying
+        save_settings(self.settings)
+        self.updating = True
+        self.notice(f'Updating {gp.APP} to v{v}...')
+        self.bg(lambda: self.e.update(hidden=not self.visible()), self._installed, self._install_failed)
+
+    def _installed(self, how):
+        self.settings.pop('update_error', None)
+        save_settings(self.settings)
+        if how == 'exit':
+            self.quit()
+        self.updating = False
+
+    def _install_failed(self, msg):
+        self.updating = False
+        self.settings['update_error'] = msg
+        save_settings(self.settings)
+        self.offer_manual(msg)
+
+    def offer_manual(self, err=None):
+        """Fallback when automatic updates are off or failed: the Update button (main view or welcome screen)."""
+        text = f'Automatic update failed: {err}' if err else f'A newer {gp.APP} (v{self.e.config["launcher_version"]}) is available.'
+        if self.screen == 'main':
+            self.upd_btn.configure(state='normal', text='Update')
+            self.upd_btn.pack(side='right')
+            if err:
+                self.banner(text, retry=False)
+        elif self.screen == 'wizard0' and not self.welcome_update.winfo_children():
+            ttk.Label(self.welcome_update, text=text, style='Banner.TLabel', wraplength=380).pack(side='left', fill='x', expand=True)
+            ttk.Button(self.welcome_update, text='Update', style='Main.TButton', command=self.install_update).pack(side='right', padx=(6, 0))
+            self.welcome_update.pack_configure(pady=(0, 12))
+
+    def notice(self, msg, secs=10):
+        """A short non-blocking line (e.g. 'Hermes updated to v6'), gone after a few seconds."""
+        if self.screen == 'main':
+            self.banner(msg, retry=False)
+            self.root.after(secs * 1000, self.banner_box.pack_forget)
+        elif self.screen == 'wizard0':
+            lbl = ttk.Label(self.welcome_update, text=msg, style='Small.TLabel')
+            lbl.pack(anchor='w')
+            self.root.after(secs * 1000, lambda: lbl.winfo_exists() and lbl.destroy())
 
     def _start_for_setup(self):
         up = self.e.server_up(self._step_say)
@@ -503,14 +573,13 @@ class App:
         self.bg_var = tk.BooleanVar(value=bool(self.settings.get('background')))
         ttk.Checkbutton(self.body, text='Let Pranav start my GPU (background mode)', variable=self.bg_var,
                         command=self.toggle_background).pack(side='bottom', anchor='w')
-        self.bg(self.e.load_config, lambda _: self._config_loaded(), lambda m: self.sub.configure(text=f'(cannot check for updates: {m})'))
+        self.check_updates()
         self.refresh()
 
     def _config_loaded(self):
-        if self.e.update_needed():
-            self.upd_btn.pack(side='right')
         if self.e.too_old():
-            self.banner('This version is too old to run. Click Update.')
+            self.banner('This version is too old to run. It updates itself; if that keeps failing, click Update.')
+            self.upd_btn.pack(side='right')
             self.start_btn.configure(state='disabled')
 
     def refresh(self):
@@ -578,6 +647,7 @@ class App:
     def start(self):
         self.banner_box.pack_forget()
         self.start_btn.configure(state='disabled')
+        self.starting = True
         self.big.configure(text='Starting your GPU...')
         self.sub.configure(text='About 5-15 minutes. You can close this window once it says GPU on.')
 
@@ -589,30 +659,41 @@ class App:
                 return 'need_code'
             self.e.prepare('start')
             return self.e.trigger()
-        self.bg(go, lambda how: self.w_code('Your GPU needs a new code from Pranav.') if how == 'need_code'
-                else self.w_terminal() if how == 'paste' else self.refresh(), self.banner)
+
+        def done(how):
+            self.starting = False
+            self.w_code('Your GPU needs a new code from Pranav.') if how == 'need_code' \
+                else self.w_terminal() if how == 'paste' else self.refresh()
+
+        def failed(msg):
+            self.starting = False
+            self.banner(msg)
+        self.bg(go, done, failed)
 
     def stop(self):
         self.stop_btn.configure(state='disabled')
         self.bg(self.e.request_stop, lambda _: self.sub.configure(text='OK: your GPU stops after the current job and confirms the backups.'))
 
-    def update(self):
+    def update(self):  # the manual fallback button
         self.upd_btn.configure(state='disabled', text='Updating...')
-        self.bg(self.e.update, lambda how: self.root.destroy() if how == 'installer'
-                else self.banner(f'Updated. Please close and open {gp.APP} again.'), self.banner)
+        self.install_update()
 
 
 def run(engine=None):
     root = tk.Tk()
     e = engine or gp.Engine()
     app = App(root, e)
-    app.bg(e.load_config, app._startup_config, lambda m: None)  # update check before the wizard, too
     if e.saved_login() and load_settings().get('setup_done'):
-        app.main()
+        app.main()  # also checks for updates
         if '--background' in sys.argv and app.settings.get('background'):  # started at login: straight to the tray/Dock
             app.on_close()
     else:
         app.w_welcome()
+        app.check_updates()
+    if '--updated' in sys.argv:
+        app.settings.pop('update_error', None)
+        save_settings(app.settings)
+        app.notice(f'{gp.APP} updated to v{gp.VERSION}')
     root.mainloop()
 
 

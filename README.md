@@ -21,7 +21,7 @@ Your hub token stays on your computer, in a file only you can read. Everything r
 
 - **Start** whenever you're free. Once it says *GPU on*, close the app.
 - **Stop after current job** if you need your GPU back. It also confirms the backups before switching off.
-- **Update** appears when there is a new version. One click installs it (the file is checked first).
+- **Updates install themselves** (from v6 on), at a quiet moment: never mid-setup and never while a start is under way. A job already running on your GPU isn't affected. You'll see "Hermes updated to vN". If an update fails, an **Update** button appears with the error.
 - **Last jobs** shows ✔ or ✘ for recent jobs. You don't need to do anything about a ✘: Pranav sees it and reruns the job.
 - **Notify me if something fails** is on by default: a red banner (on a Mac, also a notification).
 - **Let Pranav start my GPU (background mode)** is off unless you turn it on. When it's on and this laptop is on, Hermes opens at login and sits in the tray (on a Mac, in the Dock). It starts your GPU by itself when team jobs are waiting or Pranav asks. It never touches a server you started yourself. The tray menu has **Pause for 1 hour**, **Pause until tomorrow**, **Resume** and **Quit**. Turning it off also removes the start-at-login entry.

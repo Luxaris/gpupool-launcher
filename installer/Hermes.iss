@@ -49,11 +49,19 @@ Root: HKCU; Subkey: "Software\Microsoft\Windows\CurrentVersion\Run"; ValueName: 
 
 [Run]
 Filename: "{app}\Hermes.exe"; Description: "Open Hermes"; Flags: nowait postinstall skipifsilent
-; the app's self-update runs this installer with /SILENT /relaunch=1: reopen the app afterwards
-Filename: "{app}\Hermes.exe"; Flags: nowait; Check: Relaunch
+; the app's auto-update runs this installer with /VERYSILENT ... /relaunch=1 [/hidden=1]: reopen the app afterwards
+; (--updated shows "Hermes updated to vN"; --background goes straight back to the tray if it was hidden there)
+Filename: "{app}\Hermes.exe"; Parameters: "{code:RelaunchArgs}"; Flags: nowait; Check: Relaunch
 
 [Code]
 function Relaunch: Boolean;
 begin
   Result := ExpandConstant('{param:relaunch|0}') = '1';
+end;
+
+function RelaunchArgs(Param: String): String;
+begin
+  Result := '--updated';
+  if ExpandConstant('{param:hidden|0}') = '1' then
+    Result := Result + ' --background';
 end;

@@ -9,8 +9,9 @@ Everything after a launch runs on the hub server (boot.sh): the laptop may close
 Your hub token stays in a user-only file in your config dir; nothing of Pranav's is used or shipped.
 """
 import base64, hashlib, json, os, platform, stat, subprocess, sys, tempfile, time, urllib.error, urllib.request, webbrowser
+from datetime import datetime
 
-VERSION = 5
+VERSION = 6
 APP = 'Hermes'
 HUB = 'https://hub.stratusgeo.org'
 TOKEN_PAGE = f'{HUB}/hub/token'
@@ -112,28 +113,50 @@ class Engine:
     def too_old(self):
         return VERSION < int(self.config.get('min_launcher_version', 0))
 
-    def update(self):
-        """Install the pinned, checksum-verified version. Frozen app: run the standard installer (Windows: Inno Setup
-        /SILENT, per user; Mac: copy the .app out of the .dmg with hdiutil + ditto). Script copy: replace the files."""
+    def auto_update(self):
+        """config.yml `auto_update: true|false` (default true): Pranav can switch automatic updates off for everyone."""
+        return str(self.config.get('auto_update', 'true')).lower() not in ('false', 'no', 'off', '0')
+
+    def release_age_ok(self, now=None):
+        """Only auto-install a release published at least min_update_age_minutes ago (config, default 30), so a bad
+        release can be pulled first. `launcher_published` is written by `pool publish`; unknown age = not yet."""
+        try:
+            t = datetime.fromisoformat(self.config['launcher_published'].replace('Z', '+00:00')).timestamp()
+        except (KeyError, ValueError):
+            return False
+        return (now or time.time()) - t >= 60 * int(self.config.get('min_update_age_minutes', 30))
+
+    def update(self, relaunch=True, hidden=False):
+        """Install the pinned, sha256-checked version, then (relaunch=True) start the new copy with --updated and return
+        'exit': the caller must quit right away. Windows: the Inno installer /VERYSILENT for this user; it waits for
+        this app to close and its [Run] entry reopens Hermes. Mac: copy the .app out of the .dmg in place (hdiutil +
+        ditto) and reopen it. Script copy: replace the two files and restart them. Returns 'dry' in dry-run."""
+        args = ['--updated'] + (['--background'] if hidden else [])
         name = app_asset()
         if name is None:
             files = {n: self.asset(n) for n in ('gpupool.py', 'gpupool_gui.py')}
-            if not self.dry:
-                here = os.path.dirname(os.path.abspath(__file__))
-                for n, b in files.items():
-                    with open(os.path.join(here, n + '.new'), 'wb') as f:
-                        f.write(b)
-                    os.replace(os.path.join(here, n + '.new'), os.path.join(here, n))
-            return 'restart'
+            if self.dry:
+                return 'dry'
+            here = os.path.dirname(os.path.abspath(__file__))
+            for n, b in files.items():
+                with open(os.path.join(here, n + '.new'), 'wb') as f:
+                    f.write(b)
+                os.replace(os.path.join(here, n + '.new'), os.path.join(here, n))
+            if relaunch:
+                subprocess.Popen([sys.executable, os.path.join(here, 'gpupool_gui.py')] + args)
+            return 'exit'
         b = self.asset(name)
         if self.dry:
-            return 'restart'
+            return 'dry'
         path = os.path.join(tempfile.mkdtemp(), name)
         with open(path, 'wb') as f:
             f.write(b)
-        if os.name == 'nt':  # the per-user installer closes this app, updates it and reopens it
-            subprocess.Popen([path, '/SILENT', '/SUPPRESSMSGBOXES', '/relaunch=1'])
-            return 'installer'
+        if os.name == 'nt':
+            cmd = [path, '/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART', '/CURRENTUSER']
+            if relaunch:
+                cmd += ['/relaunch=1'] + (['/hidden=1'] if hidden else [])
+            subprocess.Popen(cmd)
+            return 'exit'
         bundle = os.path.abspath(os.path.join(sys.executable, '..', '..', '..'))  # the installed .app (any folder name)
         mnt = tempfile.mkdtemp()
         subprocess.run(['hdiutil', 'attach', '-nobrowse', '-quiet', '-mountpoint', mnt, path], check=True)
@@ -141,7 +164,9 @@ class Engine:
             subprocess.run(['ditto', os.path.join(mnt, f'{APP}.app'), bundle], check=True)
         finally:
             subprocess.run(['hdiutil', 'detach', '-quiet', mnt])
-        return 'restart'
+        if relaunch:
+            subprocess.Popen(['open', '-n', bundle, '--args'] + args)
+        return 'exit'
 
     # ---- JupyterHub + Jupyter REST ----
     def api(self, method, url, body=None, raw=False):
@@ -346,7 +371,7 @@ def main(argv):
         raise Fail(f'Cannot read the pool settings ({CONFIG_URL}): {x}')
     if '--update' in argv or e.update_needed():
         say(f'Updating {APP} {VERSION} -> {e.config["launcher_version"]}...')
-        e.update()
+        e.update(relaunch=False)
         say(f'PASS updated; please start {APP} again.' if not dry else '[dry-run] update verified, not installed')
         return 0
     if e.too_old():
