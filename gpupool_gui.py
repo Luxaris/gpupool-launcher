@@ -56,6 +56,22 @@ def os_notify(title, msg):
         subprocess.run(['osascript', '-e', f'display notification {json.dumps(msg)} with title {json.dumps(title)}'], check=False)
 
 
+LOG = os.path.join(gp.CFG_DIR, 'hermes.log')
+
+
+def log_line(text):
+    """Local diagnostics (what background mode decided, callback errors); trimmed to the last ~200 KB. No secrets."""
+    try:
+        os.makedirs(gp.CFG_DIR, exist_ok=True)
+        if os.path.exists(LOG) and os.path.getsize(LOG) > 400_000:
+            keep = open(LOG, 'rb').read()[-200_000:]
+            open(LOG, 'wb').write(keep)
+        with open(LOG, 'a', encoding='utf-8') as f:
+            f.write(f'{datetime.now():%Y-%m-%d %H:%M:%S} {text}\n')
+    except OSError:
+        pass
+
+
 BG_EVERY_S = 120
 HEARTBEAT_S = 1800
 BG_SENTENCE = ('Hermes starts in the tray at login and turns your GPU on only when team jobs are waiting '
@@ -169,6 +185,7 @@ class App:
         root.after(100, self._pump)
         self.tray, self.tray_state = None, None
         self.starting, self.updating, self.auto_started_at = False, False, 0.0
+        self.bg_note = ''
         root.protocol('WM_DELETE_WINDOW', self.on_close)
         if self.settings.get('background'):
             self.start_tray()
@@ -204,14 +221,23 @@ class App:
             self.bg_var.set(not on)
 
     def heartbeat(self, force=False):
-        """'<hub user> background on|off' to the public ntfy topic in config.yml, so Pranav's `pool status` can show who
-        lets him start their GPU. Status only (no secrets, anyone can read or fake it); every 30 min while on."""
+        """'<hub user> background on|off v<N> last=<what background mode last did>' to the public ntfy topic in
+        config.yml, so Pranav's `pool status` shows who lets him start their GPU and why one did not start. Status
+        only (no secrets, anyone can read or fake it); every 30 min, and at once when the outcome changes."""
         topic = (self.e.config or {}).get('heartbeat_topic')
         if not topic or not self.e.user or not (force or time.time() - self.settings.get('last_heartbeat', 0) > HEARTBEAT_S):
             return
         self.settings['last_heartbeat'] = time.time()
-        msg = f'{self.e.user} background {"on" if self.settings.get("background") else "off"} v{gp.VERSION}'.encode()
-        self.bg(lambda: gp.fetch(f'https://ntfy.sh/{topic}', data=msg, method='POST', timeout=15), None, lambda m: None)
+        note = ' '.join(self.bg_note.split())[:120]
+        msg = f'{self.e.user} background {"on" if self.settings.get("background") else "off"} v{gp.VERSION}{" last=" + note if note else ""}'
+        self.bg(lambda: gp.fetch(f'https://ntfy.sh/{topic}', data=msg.encode(), method='POST', timeout=15), None, lambda m: None)
+
+    def note(self, text):
+        """Remember (and log) what background mode just did; a change is reported in the next heartbeat right away."""
+        log_line(f'background: {text}')
+        if text != self.bg_note:
+            self.bg_note = text
+            self.heartbeat(force=True)
 
     def pause(self, until):
         self.settings['paused_until'] = until
@@ -251,21 +277,38 @@ class App:
         if not self.settings.get('background') or not self.settings.get('setup_done') or not self.e.user:
             return
         self.heartbeat()
-        self.bg(lambda: (self.e.queue(), self.e.state()), self._bg_decide, lambda m: None)
+        self.bg(lambda: (self.e.queue(), self.e.state()), self._bg_decide, lambda m: self.note(f'check failed: {m}'))
 
     def _bg_decide(self, qs):
         q, server = qs
         self.set_tray_state(server)
         now = time.time()
-        if self.screen != 'main' or not should_autostart(q, self.settings, server, now, self.e.user):
+        trigger = int(q.get('waiting', 0)) > 0 or wake_time(q, self.e.user) > self.settings.get('last_wake', 0)
+        if self.settings.get('paused_until', 0) > now:
+            return self.note('paused') if trigger else None
+        if server != 'off':
+            return self.note(f'skip: your hub server is {server}') if trigger else None
+        if not should_autostart(q, self.settings, server, now, self.e.user):
             return
+        if self.screen != 'main' and self.settings.get('setup_done') and not self.visible():
+            # hidden in the tray but left on a setup step (e.g. an earlier background start hit a hiccup and opened
+            # Step 2/3): nobody is typing there, so go back to the main view instead of skipping every start
+            log_line(f'background: hidden on {self.screen}, back to the main view')
+            self.main()
+        if self.screen != 'main':
+            return self.note(f'skip: Hermes is on the {self.screen} screen')
         if self.e.config and self.e.too_old():  # (the Start button state may be stale while hidden in the tray)
+            return self.note('skip: this version is too old; updating')
+        if self.starting:
             return
-        self.settings['last_auto_set'] = q.get('set', '')
-        self.settings['last_wake'] = max(self.settings.get('last_wake', 0), wake_time(q, self.e.user))
-        save_settings(self.settings)
-        self.auto_started_at = time.time()
-        self.start()
+        # mark the jobs/wake as handled only once the start worked; a failed start is retried on later ticks (3x)
+        key = f'{q.get("set", "")}|{wake_time(q, self.e.user)}'
+        fails = self.settings.get('auto_fail', {})
+        if fails.get('key') == key and fails.get('n', 0) >= 3:
+            return
+        self.auto_started_at = now
+        self.note('starting your GPU (background mode)')
+        self.start(auto=(q.get('set', ''), wake_time(q, self.e.user), key))
 
     # ---- background work: fn runs in a thread, done(result) / fail(message) run in the Tk thread ----
     def bg(self, fn, done=None, fail=None):
@@ -280,11 +323,16 @@ class App:
         threading.Thread(target=work, daemon=True).start()
 
     def _pump(self):
+        """Run worker results in the Tk thread. Rescheduled FIRST and each callback guarded: before v8 one exception
+        here silently stopped every later callback (background starts included) while heartbeats kept going."""
+        self.root.after(100, self._pump)
         while not self.q.empty():
             cb, arg = self.q.get()
             if cb:
-                cb(arg)
-        self.root.after(100, self._pump)
+                try:
+                    cb(arg)
+                except Exception as x:
+                    log_line(f'callback error: {type(x).__name__}: {x}')
 
     # ---- layout helpers ----
     def clear(self):
@@ -666,7 +714,9 @@ class App:
             self.root.lift()
             os_notify(gp.APP, msg)
 
-    def start(self):
+    def start(self, auto=None):
+        """Start button, or background mode with auto=(job set, wake time, key): those count as handled only once
+        the launch worked, so a failed background start is tried again on the next checks (at most 3 times)."""
         self.banner_box.pack_forget()
         self.start_btn.configure(state='disabled')
         self.starting = True
@@ -684,11 +734,24 @@ class App:
 
         def done(how):
             self.starting = False
+            if auto:
+                self.settings['last_auto_set'] = auto[0]
+                self.settings['last_wake'] = max(self.settings.get('last_wake', 0), auto[1])
+                self.settings.pop('auto_fail', None)
+                save_settings(self.settings)
+                self.note({'need_code': 'needs a new registration code (Step 2)', 'paste': 'needs the one-time terminal paste (Step 3)'}
+                          .get(how, 'started your GPU'))
             self.w_code('Your GPU needs a new code from Pranav.') if how == 'need_code' \
                 else self.w_terminal() if how == 'paste' else self.refresh()
 
         def failed(msg):
             self.starting = False
+            if auto:
+                f = self.settings.get('auto_fail', {})
+                n = f.get('n', 0) + 1 if f.get('key') == auto[2] else 1
+                self.settings['auto_fail'] = {'key': auto[2], 'n': n}
+                save_settings(self.settings)
+                self.note(f'start failed ({n}/3): {msg}')
             self.banner(msg)
         self.bg(go, done, failed)
 
