@@ -277,15 +277,29 @@ class App:
         if not self.settings.get('background') or not self.settings.get('setup_done') or not self.e.user:
             return
         self.heartbeat()
-        self.bg(lambda: (self.e.queue(), self.e.state()), self._bg_decide, lambda m: self.note(f'check failed: {m}'))
+        self.bg(lambda: (self.e.queue(), (st := self.e.state()), self.e.needs_resume(st)), self._bg_decide,
+                lambda m: self.note(f'check failed: {m}'))
 
     def _bg_decide(self, qs):
-        q, server = qs
+        q, server, resume = qs
         self.set_tray_state(server)
         now = time.time()
         trigger = int(q.get('waiting', 0)) > 0 or wake_time(q, self.e.user) > self.settings.get('last_wake', 0)
         if self.settings.get('paused_until', 0) > now:
             return self.note('paused') if trigger else None
+        if resume and not self.starting:  # our own GPU server is up but its watchdog never ran: finish that launch
+            spawn = json.load(open(gp.SPAWNED)).get('t', 0) if os.path.exists(gp.SPAWNED) else 0
+            tries = self.settings.get('resume_tries', {})
+            n = tries.get('n', 0) if tries.get('spawn') == spawn else 0
+            if n < 3:
+                self.settings['resume_tries'] = {'spawn': spawn, 'n': n + 1}
+                save_settings(self.settings)
+                if self.screen != 'main' and not self.visible():
+                    self.main()
+                if self.screen == 'main':
+                    self.note(f'resuming an interrupted launch ({n + 1}/3)')
+                    return self.start()
+            return self.note('your GPU server is on but its job runner would not start; stop it on the hub and press Start')
         if server != 'off':
             return self.note(f'skip: your hub server is {server}') if trigger else None
         if not should_autostart(q, self.settings, server, now, self.e.user):

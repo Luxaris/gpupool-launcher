@@ -11,7 +11,7 @@ Your hub token stays in a user-only file in your config dir; nothing of Pranav's
 import base64, hashlib, json, os, platform, stat, subprocess, sys, tempfile, time, urllib.error, urllib.request, webbrowser
 from datetime import datetime
 
-VERSION = 8
+VERSION = 9
 APP = 'Hermes'
 HUB = 'https://hub.stratusgeo.org'
 TOKEN_PAGE = f'{HUB}/hub/token'
@@ -24,6 +24,7 @@ INSTALL_LINE = 'bash ~/gpupool/boot.sh install'
 CFG_DIR = os.path.join(os.environ.get('APPDATA') or os.path.expanduser('~/.config'), 'gpupool')
 LOGIN = os.path.join(CFG_DIR, 'login.json')
 HISTORY = os.path.join(CFG_DIR, 'history.txt')  # last jobs seen on the server, kept for when it is off
+SPAWNED = os.path.join(CFG_DIR, 'spawned.json')  # when Hermes last asked the hub for a server (own_server)
 BUSY = ('Ready', 'Running', 'Done', 'Setting', 'Saving', 'Stopping after', 'Waiting for jobs')
 QUEUE_URL = f'https://raw.githubusercontent.com/{PUBLIC}/main/queue.json'  # count only, kept current by `pool`
 
@@ -182,8 +183,8 @@ class Engine:
     def base(self):
         return f'{HUB}/user/{self.user}'
 
-    def state(self):
-        """off | pending | gpu | cpu  (your default server)"""
+    def server_record(self):
+        """Your default server as the hub reports it ({} when off)."""
         try:
             u = self.api('GET', f'{HUB}/hub/api/users/{self.user}')
         except urllib.error.HTTPError as e:
@@ -192,12 +193,39 @@ class Engine:
             raise Fail(f'Cannot reach the hub (HTTP {e.code}).')
         except urllib.error.URLError as e:
             raise Fail(f'Cannot reach the hub ({e.reason}).')
-        s = (u.get('servers') or {}).get('')
+        return (u.get('servers') or {}).get('') or {}
+
+    def state(self):
+        """off | pending | gpu | cpu  (your default server)"""
+        s = self.server_record()
         if not s:
             return 'off'
         if not s.get('ready'):
             return 'pending'
         return 'gpu' if (s.get('user_options') or {}).get('profile') == 'gpu' else 'cpu'
+
+    def boot_alive(self):
+        """boot.sh rewrites ~/gpupool/status.txt every 10 s while it runs: fresh = the pool watchdog is alive."""
+        try:
+            m = self.api('GET', f'{self.base}/api/contents/gpupool/status.txt?content=0')['last_modified']
+            return time.time() - datetime.fromisoformat(m.replace('Z', '+00:00')).timestamp() < 180
+        except (urllib.error.HTTPError, KeyError, ValueError, TypeError):
+            return False
+
+    def own_server(self):
+        """True when Hermes itself started the server that is up now (spawn time noted on this laptop, matched
+        against the hub's start time), so it may finish that launch; a server you started yourself is never touched."""
+        try:
+            t = json.load(open(SPAWNED))['t']
+            started = datetime.fromisoformat(self.server_record()['started'].replace('Z', '+00:00')).timestamp()
+        except (OSError, ValueError, KeyError, TypeError, AttributeError):
+            return False
+        return t - 120 <= started <= t + 3600
+
+    def needs_resume(self, st):
+        """A GPU server Hermes started is up but its pool watchdog never ran (laptop slept or lost network mid-launch,
+        the terminal call failed, ...): finish the launch instead of leaving an idle GPU on."""
+        return st == 'gpu' and not self.boot_alive() and self.own_server()
 
     def text(self, path):
         try:
@@ -224,13 +252,17 @@ class Engine:
 
     # ---- the launch, in steps (the app shows each one) ----
     def pooled(self, st):
-        return st == 'gpu' and self.text('gpupool/status.txt').startswith(BUSY)
+        return st == 'gpu' and self.text('gpupool/status.txt').startswith(BUSY) and self.boot_alive()
 
     def server_up(self, say=print):
-        """Start your default server with a GPU and wait until it is ready. Leaves a server you started yourself alone."""
+        """Start your default server with a GPU and wait until it is ready. Leaves a server you started yourself alone.
+        Returns 'pooled' (already working), 'resume' (Hermes's own server is up without its watchdog), 'up', 'dry'."""
         st = self.state()
         if self.pooled(st):
             return 'pooled'
+        if self.needs_resume(st):
+            say('Your GPU server is on but its job runner never started; starting it now...')
+            return 'resume'
         if st in ('gpu', 'cpu'):
             raise Fail(f'Your hub server is already running (your own work?), so {APP} leaves it alone. To lend the GPU, '
                        'stop it on the hub (File > Hub Control Panel > Stop My Server) and press Start again.')
@@ -241,13 +273,26 @@ class Engine:
             if st == 'off':
                 say('Starting your GPU server (about 5-15 min)...' if attempt == 1 else
                     'First start can take ~10-15 min while the hub downloads the software; trying again...')
+                os.makedirs(CFG_DIR, exist_ok=True)
+                with open(SPAWNED, 'w') as f:  # lets a later check finish this launch (own_server)
+                    json.dump({'t': time.time()}, f)
                 try:
                     self.api('POST', f'{HUB}/hub/api/users/{self.user}/server', GPU_OPTS)
                 except urllib.error.HTTPError as e:
                     raise Fail(f'The hub would not start a GPU server: {e.read().decode("utf-8", "replace")[:300]}')
-            t0, note, seen = time.time(), '', 0
-            while (st := self.state()) == 'pending':
-                if time.time() - t0 > 1200:
+            t0, note, seen, errs = time.time(), '', 0, 0
+            while True:
+                try:
+                    st = self.state()
+                except Fail:  # network hiccup, or the laptop just woke up: keep waiting a while
+                    errs += 1
+                    if errs > 60:
+                        raise
+                    time.sleep(10)
+                    continue
+                if st != 'pending':
+                    break
+                if time.time() - t0 > 1200:  # (a sleeping laptop also lands here: the next check resumes the launch)
                     raise Fail(f'Your GPU server was not ready after 20 min. Check the hub in a browser.{note}')
                 if time.time() - seen > 60:  # remember the hub's latest progress line, for the error text
                     note, seen = self.spawn_note() or note, time.time()
@@ -295,15 +340,28 @@ class Engine:
         self.put('gpupool/armed', mode.encode())
 
     def trigger(self):
-        """Start boot.sh through a Jupyter terminal (its login shell runs the hook). 'paste' = one-time step needed."""
+        """Start boot.sh through a Jupyter terminal (its login shell runs the ~/.profile hook), then check it ran:
+        boot.sh deletes ~/gpupool/armed first thing. Up to 3 tries (a just-started server can refuse terminals for a
+        moment). 'paste' = the one-time hook install is still needed."""
         if self.dry:
             return 'dry'
         if not self.exists('gpupool/hooked'):
             return 'paste'
-        t = self.api('POST', f'{self.base}/api/terminals')
-        time.sleep(5)
-        self.api('DELETE', f'{self.base}/api/terminals/{t["name"]}')
-        return 'started'
+        why = ''
+        for wait in (5, 15, 30):
+            try:
+                t = self.api('POST', f'{self.base}/api/terminals')
+                time.sleep(wait)
+                self.api('DELETE', f'{self.base}/api/terminals/{t["name"]}')
+            except (urllib.error.URLError, KeyError, TypeError) as e:  # HTTPError is a URLError
+                why = f' ({type(e).__name__}: {e})'
+                time.sleep(wait)
+                continue
+            if not self.exists('gpupool/armed'):
+                return 'started'
+            why = ' (the terminal opened, but the start line in ~/.profile did not run)'
+        raise Fail(f'Could not start the job runner on your server{why}. Open a terminal on the hub and run: '
+                   f'{INSTALL_LINE}')
 
     def registered(self):
         return self.exists('gpupool/registered')
