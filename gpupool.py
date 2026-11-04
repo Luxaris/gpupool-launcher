@@ -10,7 +10,7 @@ Your hub token stays in a user-only file in your config dir; nothing of Pranav's
 """
 import base64, hashlib, json, os, platform, stat, subprocess, sys, tempfile, time, urllib.error, urllib.request, webbrowser
 
-VERSION = 3
+VERSION = 4
 APP = 'Hermes'
 HUB = 'https://hub.stratusgeo.org'
 TOKEN_PAGE = f'{HUB}/hub/token'
@@ -201,21 +201,48 @@ class Engine:
         if self.dry:
             say('[dry-run] would start a GPU server')
             return 'dry'
-        if st == 'off':
-            say('Starting your GPU server (about 5 min)...')
-            try:
-                self.api('POST', f'{HUB}/hub/api/users/{self.user}/server', GPU_OPTS)
-            except urllib.error.HTTPError as e:
-                raise Fail(f'The hub would not start a GPU server: {e.read().decode("utf-8", "replace")[:300]}')
+        for attempt in (1, 2):
+            if st == 'off':
+                say('Starting your GPU server (about 5-15 min)...' if attempt == 1 else
+                    'First start can take ~10-15 min while the hub downloads the software; trying again...')
+                try:
+                    self.api('POST', f'{HUB}/hub/api/users/{self.user}/server', GPU_OPTS)
+                except urllib.error.HTTPError as e:
+                    raise Fail(f'The hub would not start a GPU server: {e.read().decode("utf-8", "replace")[:300]}')
+            t0, note, seen = time.time(), '', 0
+            while (st := self.state()) == 'pending':
+                if time.time() - t0 > 1200:
+                    raise Fail(f'Your GPU server was not ready after 20 min. Check the hub in a browser.{note}')
+                if time.time() - seen > 60:  # remember the hub's latest progress line, for the error text
+                    note, seen = self.spawn_note() or note, time.time()
+                time.sleep(10)
+            if st == 'gpu':
+                time.sleep(5)  # the Jupyter API answers a few seconds after "ready"
+                return 'up'
+            if st != 'off':
+                break
+            note = self.spawn_note() or note  # the server vanished: the hub dropped the start
+        raise Fail(f'No GPU server came up. Check the hub in a browser.{note}')
+
+    def spawn_note(self, wait=8):
+        """The hub's last spawn progress message (JupyterHub /server/progress event stream), as ' Hub: ...'; '' if none."""
+        msg = ''
+        req = urllib.request.Request(f'{HUB}/hub/api/users/{self.user}/server/progress',
+                                     headers={'Authorization': f'token {self.token}', 'Accept': 'text/event-stream'})
         t0 = time.time()
-        while (st := self.state()) == 'pending':
-            if time.time() - t0 > 900:
-                raise Fail('Your GPU server was not ready after 15 min. Check the hub in a browser.')
-            time.sleep(10)
-        if st != 'gpu':
-            raise Fail('No GPU server came up. Check the hub in a browser.')
-        time.sleep(5)  # the Jupyter API answers a few seconds after "ready"
-        return 'up'
+        try:
+            with urllib.request.urlopen(req, timeout=wait) as r:
+                for line in r:
+                    if line.startswith(b'data:'):
+                        try:
+                            msg = json.loads(line[5:]).get('message') or msg
+                        except ValueError:
+                            pass
+                    if time.time() - t0 > wait:
+                        break
+        except Exception:  # timeout or no spawn in progress: keep whatever was read
+            pass
+        return f' Hub: {msg.strip()[:300]}' if msg.strip() else ''
 
     def prepare(self, mode='start', code=None):
         """Upload fresh, checksum-verified server scripts (+ the registration code) and arm boot.sh."""

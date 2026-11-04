@@ -34,13 +34,20 @@ jobs:
         run: |
           & "${env:ProgramFiles(x86)}\Inno Setup 6\iscc.exe" "/DAppVersion=$($env:TAG.TrimStart('v'))" "/DSrcDir=$PWD\dist\Hermes" "/DOutDir=$PWD\out" installer\Hermes.iss
           if ($LASTEXITCODE) { exit 1 }
-          Copy-Item "out\${{ matrix.asset }}" "out\${{ matrix.legacy }}"
-          gh release upload $env:TAG "out\${{ matrix.asset }}" "out\${{ matrix.legacy }}" --clobber
+          New-Item -ItemType Directory legacy | Out-Null
+          Copy-Item "out\${{ matrix.asset }}" "legacy\${{ matrix.legacy }}"
+          gh release upload $env:TAG "out\${{ matrix.asset }}" --clobber
       - name: Mac disk images (hdiutil)
         if: runner.os == 'macOS'
         run: |
-          mkdir dmg legacy && cp -R dist/Hermes.app dmg/ && cp -R dist/Hermes.app legacy/RunJobs.app
-          ln -s /Applications dmg/Applications && ln -s /Applications legacy/Applications
+          mkdir dmg legacy-app legacy && cp -R dist/Hermes.app dmg/ && cp -R dist/Hermes.app legacy-app/RunJobs.app
+          ln -s /Applications dmg/Applications && ln -s /Applications legacy-app/Applications
           hdiutil create -volname "Hermes" -srcfolder dmg -ov -format UDZO "${{ matrix.asset }}"
-          hdiutil create -volname "Hermes" -srcfolder legacy -ov -format UDZO "${{ matrix.legacy }}"
-          gh release upload "$TAG" "${{ matrix.asset }}" "${{ matrix.legacy }}" --clobber
+          hdiutil create -volname "Hermes" -srcfolder legacy-app -ov -format UDZO "legacy/${{ matrix.legacy }}"
+          gh release upload "$TAG" "${{ matrix.asset }}" --clobber
+      - name: Legacy name for v1 apps (best effort, retried; cannot fail the build)
+        continue-on-error: true
+        shell: bash
+        run: |
+          for i in 1 2 3; do gh release upload "$TAG" "legacy/${{ matrix.legacy }}" --clobber && exit 0; sleep $((i * 10)); done
+          echo "::warning::could not upload legacy/${{ matrix.legacy }}"

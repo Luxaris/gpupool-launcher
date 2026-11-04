@@ -132,6 +132,8 @@ class App:
     # ---- setup wizard ----
     def w_welcome(self):
         self.wizard(0, 'Lend your GPU to the team', on_next=self.w_login)
+        self.welcome_update = ttk.Frame(self.body)  # filled by _startup_config when a newer version exists
+        self.welcome_update.pack(fill='x')
         self.label(f'Welcome to {gp.APP}. When you have free time, press Start: your StratusGeo GPU switches on, runs a couple '
                    'of the team\'s queued experiments and switches itself off. Every log and result is saved to the team cloud and GitHub.')
         self.label('Setup takes about 15 minutes, once. After you press Start you can close this window or shut your laptop.')
@@ -182,13 +184,36 @@ class App:
 
     def w_terminal(self):
         self.wizard(3, 'Step 3: one line on your hub', back=lambda: self.w_code())
-        self.step_msg = self.label('Starting your GPU server (about 5 minutes)...')
+        self.step_msg = self.label('Starting your GPU server (about 5-15 minutes; the first start is the slowest)...')
         self.paste_box = ttk.Frame(self.body)
         self.paste_box.pack(fill='x')
-        self.bg(self._start_for_setup, self._after_trigger, self._wizard_err)
+        self.bg(self._start_for_setup, self._after_trigger, self._terminal_err)
+
+    def _terminal_err(self, msg):
+        self._wizard_err(msg)
+        if self.screen == 'wizard3':
+            self.step_msg.configure(text='Your GPU server did not start this time.')
+            ttk.Button(self.paste_box, text='Try again', style='Accent.TButton', command=self.w_terminal).pack(anchor='w', pady=6)
+
+    def _step_say(self, m):  # engine progress lines from the worker thread -> Step 3 text
+        if m:
+            self.q.put((lambda t: self.screen == 'wizard3' and self.step_msg.configure(text=t), m))
+
+    def _startup_config(self, _):
+        """Runs once when the app opens: offer the update on the first wizard screen too (the main view checks itself)."""
+        if self.screen != 'wizard0' or not (self.e.update_needed() or self.e.too_old()):
+            return
+        ttk.Label(self.welcome_update, text=f'A newer {gp.APP} (v{self.e.config["launcher_version"]}) is available.',
+                  style='Banner.TLabel').pack(side='left', fill='x', expand=True)
+        b = ttk.Button(self.welcome_update, text='Update now', style='Main.TButton')
+        b.configure(command=lambda: (b.configure(state='disabled', text='Updating...'),
+                                     self.bg(self.e.update, lambda how: self.root.destroy() if how == 'installer'
+                                             else self.err.configure(text=f'Updated. Please close and open {gp.APP} again.'))))
+        b.pack(side='right', padx=(6, 0))
+        self.welcome_update.pack_configure(pady=(0, 12))
 
     def _start_for_setup(self):
-        up = self.e.server_up()
+        up = self.e.server_up(self._step_say)
         if up != 'pooled':
             self.e.prepare('start', self.code)
         return self.e.trigger() if up != 'pooled' else 'started'
@@ -315,7 +340,7 @@ class App:
                 else 'Your GPU is off'
             sub = 'Press Start whenever you are free.'
         elif srv == 'pending':
-            big, sub = 'Your GPU is starting...', 'About 5 minutes. You can close this window.'
+            big, sub = 'Your GPU is starting...', 'About 5-15 minutes. You can close this window.'
         elif s.startswith('Running job'):
             head, _, job = s.partition(': ')
             big, sub = f'{head.replace("up to ", "")} · GPU on', job
@@ -362,10 +387,10 @@ class App:
         self.banner_box.pack_forget()
         self.start_btn.configure(state='disabled')
         self.big.configure(text='Starting your GPU...')
-        self.sub.configure(text='About 5 minutes. You can close this window once it says GPU on.')
+        self.sub.configure(text='About 5-15 minutes. You can close this window once it says GPU on.')
 
         def go():
-            up = self.e.server_up()
+            up = self.e.server_up(lambda m: m and self.q.put((lambda t: self.screen == 'main' and self.sub.configure(text=t), m)))
             if up == 'pooled':
                 return 'started'
             if not self.e.registered():
@@ -389,6 +414,7 @@ def run(engine=None):
     root = tk.Tk()
     e = engine or gp.Engine()
     app = App(root, e)
+    app.bg(e.load_config, app._startup_config, lambda m: None)  # update check before the wizard, too
     if e.saved_login() and load_settings().get('setup_done'):
         app.main()
     else:
