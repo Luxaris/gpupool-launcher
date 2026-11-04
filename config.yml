@@ -1,6 +1,6 @@
 # GPU pool settings: every app and every running pool server reads this from the public repo's main branch,
 # so one commit changes it for everyone. Flat `key: value` lines only. `pool publish` rewrites the tag/sha lines.
-jobs_per_launch: 2        # a server stops after this many jobs per Start press (or earlier when the queue is empty)
+jobs_per_launch: 4        # a server stops after this many jobs per Start press (or earlier when the queue is empty)
 min_launcher_version: 1   # older apps refuse to run and show the Update button
 launcher_version: 4
 launcher_tag: v4
