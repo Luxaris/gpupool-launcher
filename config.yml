@@ -2,15 +2,15 @@
 # so one commit changes it for everyone. Flat `key: value` lines only. `pool publish` rewrites the tag/sha lines.
 jobs_per_launch: 2        # a server stops after this many jobs per Start press (or earlier when the queue is empty)
 min_launcher_version: 1   # older apps refuse to run and show the Update button
-launcher_version: 3
-launcher_tag: v3
-sha256 gpupool.py: 677b5bd1f3bce51e4225593572da28fa569d3d44d0a76ee97c0a86bf3f855f3f
-sha256 gpupool_gui.py: 1c93ecd0abdfc51b0b3425ea4ee830893d0de431888ba36277e62eccec09fb10
+launcher_version: 4
+launcher_tag: v4
+sha256 gpupool.py: d9472fa361c148a8531f053f58923c12bfd697edfdd9a84b88967bea6a4203a2
+sha256 gpupool_gui.py: 0f8177de320bd285a4353a403ce616bc0f8ce30ed976b769d93a26f34f7f24b5
 sha256 boot.sh: 46994aef6d1bb143d58146194d67a012cc294dbf6f82d35cb8f1269486a2010b
 sha256 keepalive.sh: aabef214a31df9c2c37258fbd7459fae333102f054e380f4e372901b63e39324
-sha256 RunJobs-Setup.exe: 4931102363bbba1ebb3d3ff2bac4b2420e8fdb5a161b9f5a5f76d6a87c690a1d
-sha256 RunJobs-mac-arm64.dmg: ce6924b366ca022f0d9176aff571fd0263c118f95d7819c49783c9315f909a15
-sha256 RunJobs-mac-x64.dmg: c121ad870e4d69af201a0233d45dd8d44c3de11e4e73489751a0a609f90ca740
-sha256 Hermes-mac-arm64.dmg: eb11339372fc3bb947fa813ab1b497692d3cccf4a7d5ece73ddd3798cc7c3570
-sha256 Hermes-mac-x64.dmg: fe8f83ae8bf290098b89843ab4aa0f5c26f2cca9cfe0995962c48c840b24de60
-sha256 Hermes-Setup.exe: 4931102363bbba1ebb3d3ff2bac4b2420e8fdb5a161b9f5a5f76d6a87c690a1d
+sha256 RunJobs-Setup.exe: aaa08a66c9e5624a614be04e93c9d44418078a673b2919a0b4207c2a086d0034
+sha256 RunJobs-mac-arm64.dmg: fcf455d53d4e1bca8aa39b3d1c742e642901220669f09faec2f5ad5bc4efa8b6
+sha256 RunJobs-mac-x64.dmg: 244afc80c54cda8c01b96c6dd021b1c3cdd90ea2a61f126a98eb8f6dcc5241bc
+sha256 Hermes-mac-arm64.dmg: 388edb02f4eb3a3de0846e21cafd69304a2b291dd211636905a60d80764b7eb7
+sha256 Hermes-mac-x64.dmg: 46a9bd3122823659c92fd2d931008b11423f6bcdad29f76feff3f11359084b5e
+sha256 Hermes-Setup.exe: aaa08a66c9e5624a614be04e93c9d44418078a673b2919a0b4207c2a086d0034
