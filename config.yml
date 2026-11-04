@@ -14,3 +14,4 @@ sha256 RunJobs-mac-x64.dmg: bcdd8a5a2dc784f23a34a1f18ba7e72eec8777999f002af24b8e
 sha256 Hermes-mac-arm64.dmg: 3645c57db291f7fc31ac0429d5407acd4d863c959f8c3b6d43a0bce8e52aaf7a
 sha256 Hermes-mac-x64.dmg: 72434f0b5f0bb056a297995d44a2e8f29daf3a3aacd3bc018b0eb9e04c71cc4b
 sha256 Hermes-Setup.exe: d293a4c9704bacf96d3f6f2ed0b818655e58d9009e627c31026c8ca14379d568
+idle_wait_minutes: 15
