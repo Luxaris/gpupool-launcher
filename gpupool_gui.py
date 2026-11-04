@@ -77,6 +77,8 @@ HEARTBEAT_S = 1800
 BG_SENTENCE = ('Hermes starts in the tray at login and turns your GPU on only when team jobs are waiting '
                '(or Pranav asks); untick any time.')
 WAKE_VALID_S = 3600  # a `pool wake` request older than this is ignored (the laptop was off or asleep at the time)
+WARN_S = 300  # warning before Hermes takes over or stops an idle hub server that has no pool runner
+KEEP_S = 7200  # "Keep my server": leave it alone this long
 UPDATE_EVERY_S = 3600  # config.yml re-check for a newer Hermes (also at every app start)
 UPDATE_RETRY_S = 86400  # at most one automatic install attempt per version per day
 RUN_KEY = r'Software\Microsoft\Windows\CurrentVersion\Run'
@@ -151,6 +153,29 @@ def should_auto_update(e, settings, now, safe):
     return safe
 
 
+def server_action(info, r, now, limit, may_adopt):
+    """Pure, for tests. What to do with a hub server that is on (info from Engine.server_check; r = what Hermes
+    already did to this server). Never touches a server someone used in the last `limit` s (stuck_stop_minutes), or
+    one they asked to keep. Hermes's own launch: take it over at once (3 tries). Any other idle one without a pool
+    runner: warn, 5 min later take it over (background mode on) or stop it; take-over failed 3x: stop it.
+      none | active | kept | wait | warn | adopt | stop"""
+    if info['st'] not in ('gpu', 'cpu') or info['alive']:
+        return 'none'
+    if r.get('keep_until', 0) > now:
+        return 'kept'
+    tries = r.get('tries', 0)
+    can_adopt = may_adopt and info['st'] == 'gpu' and tries < 3
+    if info['own'] and can_adopt:
+        return 'adopt'
+    if info['idle'] < limit:
+        return 'active'
+    if not r.get('warned_at'):
+        return 'warn'
+    if now - r['warned_at'] < WARN_S:
+        return 'wait'
+    return 'adopt' if can_adopt else 'stop'
+
+
 def tomorrow_morning(now):
     t = datetime.fromtimestamp(now).replace(hour=7, minute=0, second=0, microsecond=0)
     return (t.timestamp() + 86400) if t.timestamp() <= now else t.timestamp()
@@ -184,7 +209,7 @@ class App:
         self.body.pack(fill='both', expand=True)
         root.after(100, self._pump)
         self.tray, self.tray_state = None, None
-        self.starting, self.updating, self.auto_started_at = False, False, 0.0
+        self.starting, self.updating, self.auto_started_at, self.taking_over = False, False, 0.0, False
         self.bg_note = ''
         root.protocol('WM_DELETE_WINDOW', self.on_close)
         if self.settings.get('background'):
@@ -253,6 +278,7 @@ class App:
             pystray.MenuItem('Pause for 1 hour', post(lambda: self.pause(time.time() + 3600))),
             pystray.MenuItem('Pause until tomorrow', post(lambda: self.pause(tomorrow_morning(time.time())))),
             pystray.MenuItem('Resume', post(lambda: self.pause(0))),
+            pystray.MenuItem('Keep my server (2 h)', post(self.keep_server)),
             pystray.MenuItem('Quit', post(self.quit)))
         self.tray = pystray.Icon(gp.APP, tray_image('idle'), gp.APP, menu)
         self.tray.run_detached()
@@ -274,34 +300,41 @@ class App:
 
     def _bg_tick(self):
         self.root.after(BG_EVERY_S * 1000, self._bg_tick)
-        if not self.settings.get('background') or not self.settings.get('setup_done') or not self.e.user:
+        if not self.settings.get('setup_done') or not self.e.user:
             return
-        self.heartbeat()
-        self.bg(lambda: (self.e.queue(), (st := self.e.state()), self.e.needs_resume(st)), self._bg_decide,
+        on = bool(self.settings.get('background'))
+        if on:
+            self.heartbeat()
+        # every 2 min, background mode on or off: the queue, and one safety look at the hub server (server_action)
+        limit = 60 * int((self.e.config or {}).get('stuck_stop_minutes', 30))
+        self.bg(lambda: (self.e.queue() if on else {}, self.e.server_check(limit)), self._bg_decide,
                 lambda m: self.note(f'check failed: {m}'))
 
     def _bg_decide(self, qs):
-        q, server, resume = qs
+        q, info = qs
+        self.cur_server = info.get('started', '')  # for "Keep my server"
+        server = info['st']
         self.set_tray_state(server)
         now = time.time()
+        limit = 60 * int((self.e.config or {}).get('stuck_stop_minutes', 30))
+        if server in ('gpu', 'cpu') and not self.starting and not self.taking_over:
+            return self.take_control(info, now, limit)
+        if not self.settings.get('background'):
+            return
         trigger = int(q.get('waiting', 0)) > 0 or wake_time(q, self.e.user) > self.settings.get('last_wake', 0)
         if self.settings.get('paused_until', 0) > now:
             return self.note('paused') if trigger else None
-        if resume and not self.starting:  # our own GPU server is up but its watchdog never ran: finish that launch
-            spawn = json.load(open(gp.SPAWNED)).get('t', 0) if os.path.exists(gp.SPAWNED) else 0
-            tries = self.settings.get('resume_tries', {})
-            n = tries.get('n', 0) if tries.get('spawn') == spawn else 0
-            if n < 3:
-                self.settings['resume_tries'] = {'spawn': spawn, 'n': n + 1}
-                save_settings(self.settings)
-                if self.screen != 'main' and not self.visible():
-                    self.main()
-                if self.screen == 'main':
-                    self.note(f'resuming an interrupted launch ({n + 1}/3)')
-                    return self.start()
-            return self.note('your GPU server is on but its job runner would not start; stop it on the hub and press Start')
         if server != 'off':
             return self.note(f'skip: your hub server is {server}') if trigger else None
+        if self.settings.get('fresh_start') and self.screen == 'main' and not self.starting:
+            self.settings.pop('fresh_start')  # Hermes just stopped a stuck server: start a controlled one in its place
+            if now - self.settings.get('fresh_at', 0) < KEEP_S:  # at most one replacement server per 2 h: no loop
+                save_settings(self.settings)
+                return self.note('stuck server stopped; not starting another replacement within 2 h')
+            self.settings['fresh_at'] = now
+            save_settings(self.settings)
+            self.note('starting a fresh GPU server (the old one was stuck)')
+            return self.start()
         if not should_autostart(q, self.settings, server, now, self.e.user):
             return
         if self.screen != 'main' and self.settings.get('setup_done') and not self.visible():
@@ -323,6 +356,85 @@ class App:
         self.auto_started_at = now
         self.note('starting your GPU (background mode)')
         self.start(auto=(q.get('set', ''), wake_time(q, self.e.user), key))
+
+    def take_control(self, info, now, limit):
+        """Apply server_action to a hub server that is on: adopt it into the pool, warn, or stop it (see there)."""
+        r = self.settings.get('rogue') or {}
+        if r.get('server') != info['started']:
+            r = {'server': info['started']}  # a different server than last time: start over
+        may_adopt = info['own'] or (bool(self.settings.get('background')) and self.settings.get('paused_until', 0) <= now)
+        act = server_action(info, r, now, limit, may_adopt)
+        mins = limit // 60
+        if act == 'active':
+            r.pop('warned_at', None)
+            if not info['own']:
+                self.note('your hub server is on and recently used: left alone')
+        elif act == 'kept':
+            self.note('your hub server: kept by you, left alone for now')
+        elif act == 'warn':
+            r['warned_at'] = now
+            what = 'takes it over for pool jobs' if may_adopt and info['st'] == 'gpu' and r.get('tries', 0) < 3 else 'stops it'
+            self.warn_keep(f'Your GPU server is on but idle and not doing pool jobs; {gp.APP} {what} in 5 min. '
+                           'Click "Keep my server" to leave it alone for 2 h.')
+            self.note(f'warned: idle {int(info["idle"] / 60)} min, no runner; acting in 5 min')
+        elif act == 'adopt':
+            r['tries'] = r.get('tries', 0) + 1
+            self.taking_over = True
+            self.note(f'taking over the server for pool jobs ({r["tries"]}/3)')
+
+            def ok(_):
+                self.taking_over = False
+                self.note('took over the server: pool watchdog started')
+
+            def bad(m):
+                self.taking_over = False
+                self.note(f'take-over failed ({r["tries"]}/3): {m}')
+            self.bg(self.e.adopt, ok, bad)
+        elif act == 'stop':
+            self.taking_over = True
+
+            def stopped(_):
+                self.taking_over = False
+                self.note(f'stopped: no runner, idle {mins} min')
+                if self.settings.get('background'):
+                    self.settings['fresh_start'] = True  # a controlled server takes its place on the next check
+                    save_settings(self.settings)
+                if self.screen == 'main':
+                    self.sub.configure(text=f'Stopped your GPU server: idle for {mins} min without a job runner.')
+
+            def failed(m):
+                self.taking_over = False
+                self.note(f'could not stop the idle server: {m}')
+            self.bg(self.e.stop_server, stopped, failed)
+        self.settings['rogue'] = r
+        save_settings(self.settings)
+
+    def keep_server(self):
+        """'Keep my server': leave the current hub server alone for 2 h."""
+        r = self.settings.get('rogue') or {}
+        cur = getattr(self, 'cur_server', '')
+        if cur and r.get('server') != cur:
+            r = {'server': cur}
+        r['keep_until'] = time.time() + KEEP_S
+        r.pop('warned_at', None)
+        self.settings['rogue'] = r
+        save_settings(self.settings)
+        self.note('kept by you for 2 h')
+        if self.screen == 'main':
+            self.banner_box.pack_forget()
+
+    def warn_keep(self, msg):
+        """The 5-min warning: tray balloon (Windows) / notification (Mac) and a banner with a Keep button."""
+        if self.tray:
+            try:
+                self.tray.notify(msg, gp.APP)
+            except Exception:
+                pass
+        os_notify(gp.APP, msg)
+        if self.screen == 'main':
+            self.banner(msg, retry=False)
+            if not any(isinstance(w, ttk.Button) and w.cget('text') == 'Keep my server' for w in self.banner_box.winfo_children()):
+                ttk.Button(self.banner_box, text='Keep my server', command=self.keep_server).pack(side='right', padx=(6, 0))
 
     # ---- background work: fn runs in a thread, done(result) / fail(message) run in the Tk thread ----
     def bg(self, fn, done=None, fail=None):

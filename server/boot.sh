@@ -28,10 +28,11 @@ cfg() {  # cfg <key> <default>: a number from the shared config; the last known 
   local v; v=$(curl -fsS -m 20 "$CONFIG_URL?t=$(date +%s)" | sed -n "s/^$1: *\([0-9][0-9]*\).*/\1/p") || v=""
   [ -n "$v" ] && echo "$v" > "$G/$1"; cat "$G/$1" 2> /dev/null || echo "$2"
 }
-read_config() {  # sets max_jobs and wait_s
+read_config() {  # sets max_jobs, wait_s and stuck_s
   max_jobs=$(cfg jobs_per_launch 2)
   local m; m=$(cfg idle_wait_minutes 15)
   if [ "$m" -gt 0 ]; then wait_s=$((m * 60)); else wait_s=$IDLE_S; fi
+  stuck_s=$(( $(cfg stuck_stop_minutes 30) * 60 ))
 }
 confirm_saved() {  # never stop silently with unconfirmed results: retry what the workflow parked in ~/gpupool/unsaved
   local d left=0 aws=/srv/conda/envs/notebook/bin/aws
@@ -100,16 +101,22 @@ if [ -s $G/regtoken ] || [ ! -f $R/.runner ]; then  # GitHub's documented instal
   [ "${ok:-}" != no ] || hub_stop "ERROR: registration failed (codes expire after 1 hour). Ask Pranav for a new code and run again."
 fi
 touch $G/registered  # Hermes checks this (the Jupyter API cannot read hidden files like .runner)
+ro=$(wc -c < $G/runner.out 2> /dev/null || echo 0)  # this boot's part of runner.out starts here
 pgrep -f "$R/bin/Runner.Listener" > /dev/null || (cd $R && nohup ./run.sh >> $G/runner.out 2>&1 < /dev/null &)
 read_config
 bash $G/keepalive.sh $$ >> $G/keepalive.log 2>&1 &  # hub activity every 10 min for as long as this watchdog runs (jobs + waiting)
 say "Ready: your GPU takes up to $max_jobs job(s) from the queue. You can close this window."
-idle_since=$START; wpid=""; wname=""; n=0; restarts=0
+idle_since=$START; wpid=""; wname=""; n=0; restarts=0; online=""
 while sleep 10; do
   now=$(date +%s); age=$((now - START))
   [ $age -ge "$MAX_S" ] && hub_stop "Reached the $((MAX_S / 3600)) h server limit, stopping your GPU. Thanks!"
+  # the runner prints "Listening for Jobs" once GitHub has it online; never by stuck_stop_minutes = stop, don't burn the GPU
+  # (grep -c reads to the end: with pipefail a grep -q would SIGPIPE tail and make the match look like a failure)
+  [ -z "$online" ] && [ "$(tail -c +$((ro + 1)) $G/runner.out 2> /dev/null | grep -c 'Listening for Jobs' || true)" != 0 ] && online=yes
+  [ -z "$online" ] && [ $age -ge "$stuck_s" ] && hub_stop "ERROR: the job runner did not come online within $((stuck_s / 60)) min (see ~/gpupool/runner.out). Stopping your GPU; Pranav has been told."
   w=$(pgrep -f "$R/bin/Runner.Worker" | head -1 || true)
-  if [ -n "$w" ]; then  # a job is running
+  if [ -n "$w" ]; then  # a job is running (so the runner is online)
+    online=yes
     [ "$w" != "$wpid" ] && { wpid=$w; rm -f $G/current; }
     wname=$(cat $G/current 2> /dev/null || true)  # written by the workflow's run step
     say "Running job $((n + 1)) of up to $max_jobs: ${wname:-starting...}$([ -e $G/stop ] && echo ' (stopping after this job)')"

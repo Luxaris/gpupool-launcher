@@ -39,6 +39,16 @@ def fetch(url, headers=None, data=None, method=None, timeout=60):
         return r.read()
 
 
+def _ts(iso, default=None):
+    """Hub/Jupyter ISO time ('...Z') -> epoch seconds; `default` when missing or unreadable (raises if no default)."""
+    try:
+        return datetime.fromisoformat(str(iso).replace('Z', '+00:00')).timestamp()
+    except (ValueError, TypeError):
+        if default is None:
+            raise ValueError(f'bad time {iso!r}')
+        return default
+
+
 def parse_config(text):
     """config.yml is flat `key: value` lines (no YAML library needed)."""
     out = {}
@@ -176,6 +186,8 @@ class Engine:
         if body is not None:
             h['Content-Type'] = 'application/json'
             data = json.dumps(body).encode()
+        if self.user and url.startswith(self.base):  # our own calls into the server also count as "activity" on the hub
+            self.probes = (getattr(self, 'probes', []) + [time.time()])[-50:]
         b = fetch(url, h, data, method)
         return b if raw else (json.loads(b) if b else None)
 
@@ -212,12 +224,12 @@ class Engine:
         except (urllib.error.HTTPError, KeyError, ValueError, TypeError):
             return False
 
-    def own_server(self):
+    def own_server(self, rec=None):
         """True when Hermes itself started the server that is up now (spawn time noted on this laptop, matched
-        against the hub's start time), so it may finish that launch; a server you started yourself is never touched."""
+        against the hub's start time)."""
         try:
             t = json.load(open(SPAWNED))['t']
-            started = datetime.fromisoformat(self.server_record()['started'].replace('Z', '+00:00')).timestamp()
+            started = _ts((rec or self.server_record())['started'])
         except (OSError, ValueError, KeyError, TypeError, AttributeError):
             return False
         return t - 120 <= started <= t + 3600
@@ -226,6 +238,45 @@ class Engine:
         """A GPU server Hermes started is up but its pool watchdog never ran (laptop slept or lost network mid-launch,
         the terminal call failed, ...): finish the launch instead of leaving an idle GPU on."""
         return st == 'gpu' and not self.boot_alive() and self.own_server()
+
+    def user_idle(self, rec, now=None):
+        """Seconds since someone last USED the server: the hub's last_activity, except bumps our own API calls into the
+        server caused (the hub folds proxy traffic into last_activity up to ~5 min late). Starts at the server's start."""
+        now = now or time.time()
+        key = rec.get('started', '')
+        seen = getattr(self, 'user_act', {})
+        last = seen.get(key) or _ts(key, now)
+        la = _ts(rec.get('last_activity'), 0)
+        if la > last and not any(p - 5 <= la <= p + 330 for p in getattr(self, 'probes', [])):
+            last = la
+        self.user_act = {key: last}
+        return now - last
+
+    def server_check(self, limit):
+        """One look at your hub server for the safety rules (App.server_action): state, whether Hermes started it,
+        how long nobody used it, and whether its pool watchdog is alive. The watchdog check touches the server, so
+        it only runs when it matters: our own server, or one idle for `limit` seconds."""
+        rec = self.server_record()
+        st = 'off' if not rec else 'pending' if not rec.get('ready') else \
+            'gpu' if (rec.get('user_options') or {}).get('profile') == 'gpu' else 'cpu'
+        info = {'st': st, 'started': rec.get('started', ''), 'own': False, 'idle': 0, 'alive': False}
+        if st in ('gpu', 'cpu'):
+            info['own'] = self.own_server(rec)
+            info['idle'] = self.user_idle(rec)
+            if info['own'] or info['idle'] >= limit:
+                info['alive'] = self.boot_alive()
+        return info
+
+    def adopt(self):
+        """Make the running server a normal pool server: fresh scripts, armed boot.sh, started through a terminal
+        (then the usual idle / jobs_per_launch / 8 h limits apply). Raises Fail if the start line does not run."""
+        self.prepare('start')
+        if self.trigger() == 'paste':
+            raise Fail('the one-time start line is not installed on this server')
+
+    def stop_server(self):
+        """Stop your default server (the same hub API call boot.sh's hub_stop makes)."""
+        self.api('DELETE', f'{HUB}/hub/api/users/{self.user}/server')
 
     def text(self, path):
         try:
