@@ -2,18 +2,18 @@
 # so one commit changes it for everyone. Flat `key: value` lines only. `pool publish` rewrites the tag/sha lines.
 jobs_per_launch: 4        # a server stops after this many jobs per Start press (or earlier when the queue is empty)
 min_launcher_version: 1   # older apps refuse to run and show the Update button
-launcher_version: 6
-launcher_tag: v6
-sha256 gpupool.py: cc25c3cb2b2106d23e75758558ac65a47812d90aa08c3bf5b0459c026c5add60
-sha256 gpupool_gui.py: 5c4abbb0d995a31f2b2ea211378560ed109fd70440cf1e20a5f3958e57c6eef8
+launcher_version: 7
+launcher_tag: v7
+sha256 gpupool.py: fdd32182b318efb7f4a5a0423a51fdfed8281b0db2e3678ccb6387605599bd25
+sha256 gpupool_gui.py: 9ecae1a5d86feea41a2b47a1504266a26ab80f652669489bf95c9581da6ae092
 sha256 boot.sh: 3f4646b87eac1ba764acfe29ab8eb91954f823536473dbc09ad817a81850ee72
 sha256 keepalive.sh: aabef214a31df9c2c37258fbd7459fae333102f054e380f4e372901b63e39324
-sha256 RunJobs-Setup.exe: 2e6490b79db16eb9d2c15176e7c6ef943d27145fd9c4cdb8f9549601607d6c63
-sha256 RunJobs-mac-arm64.dmg: 4cfe09ef89295c5c0a0cfafc17324b598b539ee34f164ca9573cbd18aa5e56ca
-sha256 RunJobs-mac-x64.dmg: ea3351f1153303e1ace5c6d361f76f021613e0071f4c343bdf527bc6dae35b76
-sha256 Hermes-mac-arm64.dmg: 89ceee8590414feaafe2a4a1c7b894d05c6199eb85b2661edca4208d267bbe21
-sha256 Hermes-mac-x64.dmg: 6ef1c6cf3cae0ac254f2008fa4a219d47e060c61d5531547486bd09eb4ba5341
-sha256 Hermes-Setup.exe: 2e6490b79db16eb9d2c15176e7c6ef943d27145fd9c4cdb8f9549601607d6c63
+sha256 RunJobs-Setup.exe: adb561e0b4a87ee475e4592201fe73a34c91bd356d3d885a5ebf3e495d2d75e5
+sha256 RunJobs-mac-arm64.dmg: fa04555e8082000016f7d73568931f7560afd6b2b594c6769401289cc8994757
+sha256 RunJobs-mac-x64.dmg: 0c6f6aa6d9019a72f06429adcca37bcc14cdb044e0e0d5b0a39ea38e6f662388
+sha256 Hermes-mac-arm64.dmg: c7048f21da56155294f744dd396a35acb27d0cf575e937234e6a33d189468677
+sha256 Hermes-mac-x64.dmg: 0c02a440b98239eaaa3bba61090919b7b199cf6cb845d5679486012c68c42981
+sha256 Hermes-Setup.exe: adb561e0b4a87ee475e4592201fe73a34c91bd356d3d885a5ebf3e495d2d75e5
 idle_wait_minutes: 15
 heartbeat_topic: hermes-teamsound-493d44df9a1c
-launcher_published: 2026-11-04T02:26:40Z
+launcher_published: 2026-11-04T08:21:28Z
