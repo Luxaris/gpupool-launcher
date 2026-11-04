@@ -11,13 +11,19 @@ Your hub token stays in a user-only file in your config dir; nothing of Pranav's
 import base64, hashlib, json, os, platform, stat, subprocess, sys, tempfile, time, urllib.error, urllib.request, webbrowser
 from datetime import datetime
 
-VERSION = 10
+VERSION = 11
 APP = 'Hermes'
 HUB = 'https://hub.stratusgeo.org'
 TOKEN_PAGE = f'{HUB}/hub/token'
 PUBLIC = 'Luxaris/gpupool-launcher'
-CONFIG_URL = f'https://raw.githubusercontent.com/{PUBLIC}/main/config.yml'
+RAW = f'https://raw.githubusercontent.com/{PUBLIC}/main'  # public fallback for repo files (before the repo goes private)
 ASSET_URL = f'https://github.com/{PUBLIC}/releases/download/{{tag}}/{{name}}'
+GH_API = f'https://api.github.com/repos/{PUBLIC}'
+try:  # read-only fine-grained token (Contents: read, this repo only), written into hermes_token.py by build.yml from
+    from hermes_token import TOKEN as _GH_TOKEN  # the HERMES_READ_TOKEN secret; never in the repo, never logged
+except ImportError:
+    _GH_TOKEN = ''
+GH = {'state': 'none' if not _GH_TOKEN else 'unused', 'expires': ''}  # for heartbeats: is the read token healthy?
 GPU_OPTS = {'profile': 'gpu', 'image--unlisted-choice': 'quay.io/cryointhecloud/cryo-python-ai:latest'}  # = stratusgeo preset 5
 SERVER_FILES = ('boot.sh', 'keepalive.sh')
 INSTALL_LINE = 'bash ~/gpupool/boot.sh install'
@@ -26,7 +32,6 @@ LOGIN = os.path.join(CFG_DIR, 'login.json')
 HISTORY = os.path.join(CFG_DIR, 'history.txt')  # last jobs seen on the server, kept for when it is off
 SPAWNED = os.path.join(CFG_DIR, 'spawned.json')  # when Hermes last asked the hub for a server (own_server)
 BUSY = ('Ready', 'Running', 'Done', 'Setting', 'Saving', 'Stopping after', 'Waiting for jobs')
-QUEUE_URL = f'https://raw.githubusercontent.com/{PUBLIC}/main/queue.json'  # count only, kept current by `pool`
 
 
 class Fail(Exception):
@@ -50,6 +55,65 @@ def _note_date(value):
         _SKEW[0] = parsedate_to_datetime(value).timestamp() - time.time()
     except (TypeError, ValueError, IndexError):
         pass
+
+
+def gh_fetch(url, accept, timeout=60):
+    """GitHub API read with the build-time token. The Authorization header is 'unredirected': a release asset reply
+    redirects to storage that must not get it (and never sees the token). Notes token expiry/rejection in GH."""
+    req = urllib.request.Request(url, headers={'Accept': accept, 'X-GitHub-Api-Version': '2022-11-28'})
+    req.add_unredirected_header('Authorization', f'Bearer {_GH_TOKEN}')
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as r:
+            _note_date(r.headers.get('Date'))
+            GH['state'] = 'ok'
+            exp = r.headers.get('github-authentication-token-expiration')
+            if exp:
+                GH['expires'] = exp
+            return r.read()
+    except urllib.error.HTTPError as e:
+        if e.code in (401, 403):
+            GH['state'] = 'rejected'
+        raise
+
+
+def repo_file(path):
+    """A file from the launcher repo's main branch: GitHub API with the read token (works when the repo is private),
+    else the public raw URL (works while it is public, and for builds without a token)."""
+    if _GH_TOKEN:
+        try:
+            return gh_fetch(f'{GH_API}/contents/{path}?ref=main&t={int(time.time())}', 'application/vnd.github.raw')
+        except urllib.error.HTTPError as e:
+            if e.code == 404:  # genuinely missing (e.g. queue.json before the first `pool add`)
+                raise
+        except urllib.error.URLError:
+            pass
+    return fetch(f'{RAW}/{path}?t={int(time.time())}', timeout=30)
+
+
+def release_asset(tag, name):
+    """A release asset: via the API asset id with the token (private repo), else the public download URL."""
+    if _GH_TOKEN:
+        try:
+            rel = json.loads(gh_fetch(f'{GH_API}/releases/tags/{tag}', 'application/vnd.github+json'))
+            aid = next(a['id'] for a in rel.get('assets', []) if a['name'] == name)
+            return gh_fetch(f'{GH_API}/releases/assets/{aid}', 'application/octet-stream', timeout=600)
+        except (urllib.error.URLError, StopIteration, KeyError, ValueError):
+            pass
+    return fetch(ASSET_URL.format(tag=tag, name=name), timeout=600)
+
+
+def token_note():
+    """'' when the read token is fine; 'rejected' or 'expires-YYYY-MM-DD' (within 30 days) for heartbeats / pool status."""
+    if GH['state'] == 'rejected':
+        return 'rejected'
+    if GH['state'] == 'none' and getattr(sys, 'frozen', False):
+        return 'missing'
+    try:
+        e = GH['expires'].replace(' UTC', ' +0000')  # header looks like '2027-02-03 08:00:00 UTC' or '... -0800'
+        t = datetime.strptime(e, '%Y-%m-%d %H:%M:%S %z').timestamp()
+    except (ValueError, TypeError):
+        return ''
+    return f'expires-{datetime.fromtimestamp(t):%Y-%m-%d}' if t - now() < 30 * 86400 else ''
 
 
 def now():
@@ -117,13 +181,21 @@ class Engine:
 
     # ---- remote config + updates ----
     def load_config(self):
-        self.config = parse_config(fetch(CONFIG_URL + f'?t={int(time.time())}').decode())
+        self.config_text = repo_file('config.yml').decode()
+        self.config = parse_config(self.config_text)
         return self.config
+
+    def push_config(self):
+        """Give the server its settings: boot.sh reads ~/gpupool/config.yml, so it needs no GitHub access (the launcher
+        repo may be private; servers never get the token)."""
+        if getattr(self, 'config_text', None):
+            self.put('gpupool/config.yml', self.config_text.encode())
+            self.pushed_config = self.config_text
 
     def asset(self, name):
         """A release asset of the pinned tag, refused unless its sha256 matches config.yml."""
         c = self.config or self.load_config()  # the setup wizard runs before the main screen has loaded it
-        b = fetch(ASSET_URL.format(tag=c['launcher_tag'], name=name), timeout=600)
+        b = release_asset(c['launcher_tag'], name)
         if hashlib.sha256(b).hexdigest() != c.get(f'sha256 {name}', ''):
             raise Fail(f'{name} from {c["launcher_tag"]} failed its checksum; not using it. Tell Pranav.')
         return b
@@ -132,7 +204,7 @@ class Engine:
     def queue():
         """The public pool indicator: {'waiting': n, 'set': opaque id of those jobs, 'updated': iso}. No login needed."""
         try:
-            return json.loads(fetch(QUEUE_URL + f'?t={int(time.time())}', timeout=30))
+            return json.loads(repo_file('queue.json'))
         except urllib.error.HTTPError as e:
             if e.code == 404:  # not published yet
                 return {'waiting': 0, 'set': ''}
@@ -421,6 +493,7 @@ class Engine:
             self.rm(f'gpupool/{n}')
         if code:
             self.put('gpupool/regtoken', code.strip().encode())
+        self.push_config()
         self.put('gpupool/armed', mode.encode())
 
     def trigger(self):
@@ -510,7 +583,7 @@ def main(argv):
     try:
         e.load_config()
     except Exception as x:
-        raise Fail(f'Cannot read the pool settings ({CONFIG_URL}): {x}')
+        raise Fail(f'Cannot read the pool settings (config.yml): {x}')
     if '--update' in argv or e.update_needed():
         say(f'Updating {APP} {VERSION} -> {e.config["launcher_version"]}...')
         e.update(relaunch=False)

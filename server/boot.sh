@@ -24,8 +24,11 @@ MODE=${1:-start}
 mkdir -p $G
 
 say() { echo "$*" > $G/status.tmp && mv -f $G/status.tmp $G/status.txt; echo "$(date +%F' '%T) $*"; }
-cfg() {  # cfg <key> <default>: a number from the shared config; the last known value (or the default) if GitHub is unreachable
-  local v; v=$(curl -fsS -m 20 "$CONFIG_URL?t=$(date +%s)" | sed -n "s/^$1: *\([0-9][0-9]*\).*/\1/p") || v=""
+cfg() {  # cfg <key> <default>: a number from ~/gpupool/config.yml (uploaded and kept fresh by Hermes: the launcher repo
+  # may be private and servers never get a GitHub token), else the public config, else the last known value / default
+  local v=""
+  [ -f "$G/config.yml" ] && v=$(sed -n "0,/^$1: *\([0-9][0-9]*\).*/s//\1/p" "$G/config.yml")
+  [ -n "$v" ] || v=$(curl -fsS -m 20 "$CONFIG_URL?t=$(date +%s)" | sed -n "s/^$1: *\([0-9][0-9]*\).*/\1/p") || v=""
   [ -n "$v" ] && echo "$v" > "$G/$1"; cat "$G/$1" 2> /dev/null || echo "$2"
 }
 read_config() {  # sets max_jobs, wait_s and stuck_s

@@ -30,7 +30,16 @@ jobs:
       - name: Tray icon packages (Windows only; on a Mac Hermes uses its Dock icon)
         if: runner.os == 'Windows'
         run: pip install pystray pillow
-      - run: pyinstaller --noconfirm --onedir --windowed --name Hermes --hidden-import pystray._win32 gpupool_gui.py
+      - name: Embed the read-only token (secret HERMES_READ_TOKEN -> hermes_token.py, gitignored, never printed)
+        shell: python
+        env:
+          HERMES_READ_TOKEN: ${{ secrets.HERMES_READ_TOKEN }}
+        run: |
+          import os
+          t = os.environ.get('HERMES_READ_TOKEN', '').strip()
+          open('hermes_token.py', 'w').write('TOKEN = %r\n' % t)
+          print('read token embedded' if t else '::warning::HERMES_READ_TOKEN not set: this build can only read a PUBLIC repo')
+      - run: pyinstaller --noconfirm --onedir --windowed --name Hermes --hidden-import pystray._win32 --hidden-import hermes_token gpupool_gui.py
       - name: Windows installer (Inno Setup)
         if: runner.os == 'Windows'
         shell: pwsh

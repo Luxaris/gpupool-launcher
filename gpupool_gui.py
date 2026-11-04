@@ -254,7 +254,9 @@ class App:
             return
         self.settings['last_heartbeat'] = time.time()
         note = ' '.join(self.bg_note.split())[:120]
-        msg = f'{self.e.user} background {"on" if self.settings.get("background") else "off"} v{gp.VERSION}{" last=" + note if note else ""}'
+        tok = gp.token_note()  # read-token trouble ('rejected' / 'expires-YYYY-MM-DD'), for Pranav's `pool status`
+        msg = (f'{self.e.user} background {"on" if self.settings.get("background") else "off"} v{gp.VERSION}'
+               f'{" tok=" + tok if tok else ""}{" last=" + note if note else ""}')
         self.bg(lambda: gp.fetch(f'https://ntfy.sh/{topic}', data=msg.encode(), method='POST', timeout=15), None, lambda m: None)
 
     def note(self, text):
@@ -334,6 +336,8 @@ class App:
         self.set_tray_state(server)
         now = gp.now()  # real time: wake requests and hub times come from other clocks
         limit = self.stuck_limit()
+        if info.get('alive') and info.get('own') and getattr(self.e, 'config_text', None) != getattr(self.e, 'pushed_config', None):
+            self.bg(self.e.push_config, None, lambda m: None)  # boot.sh reads its settings from the copy Hermes uploads
         if server in ('gpu', 'cpu') and not self.starting and not self.taking_over:
             return self.take_control(info, now, limit)
         if not self.settings.get('background'):
