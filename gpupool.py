@@ -10,7 +10,7 @@ Your hub token stays in a user-only file in your config dir; nothing of Pranav's
 """
 import base64, hashlib, json, os, platform, stat, subprocess, sys, tempfile, time, urllib.error, urllib.request, webbrowser
 
-VERSION = 2
+VERSION = 3
 APP = 'Hermes'
 HUB = 'https://hub.stratusgeo.org'
 TOKEN_PAGE = f'{HUB}/hub/token'
@@ -89,7 +89,7 @@ class Engine:
 
     def asset(self, name):
         """A release asset of the pinned tag, refused unless its sha256 matches config.yml."""
-        c = self.config
+        c = self.config or self.load_config()  # the setup wizard runs before the main screen has loaded it
         b = fetch(ASSET_URL.format(tag=c['launcher_tag'], name=name), timeout=600)
         if hashlib.sha256(b).hexdigest() != c.get(f'sha256 {name}', ''):
             raise Fail(f'{name} from {c["launcher_tag"]} failed its checksum; not using it. Tell Pranav.')
