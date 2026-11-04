@@ -11,7 +11,7 @@ Your hub token stays in a user-only file in your config dir; nothing of Pranav's
 import base64, hashlib, json, os, platform, stat, subprocess, sys, tempfile, time, urllib.error, urllib.request, webbrowser
 from datetime import datetime
 
-VERSION = 6
+VERSION = 7
 APP = 'Hermes'
 HUB = 'https://hub.stratusgeo.org'
 TOKEN_PAGE = f'{HUB}/hub/token'

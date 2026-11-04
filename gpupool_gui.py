@@ -58,6 +58,8 @@ def os_notify(title, msg):
 
 BG_EVERY_S = 120
 HEARTBEAT_S = 1800
+BG_SENTENCE = ('Hermes starts in the tray at login and turns your GPU on only when team jobs are waiting '
+               '(or Pranav asks); untick any time.')
 WAKE_VALID_S = 3600  # a `pool wake` request older than this is ignored (the laptop was off or asleep at the time)
 UPDATE_EVERY_S = 3600  # config.yml re-check for a newer Hermes (also at every app start)
 UPDATE_RETRY_S = 86400  # at most one automatic install attempt per version per day
@@ -198,16 +200,8 @@ class App:
 
     def toggle_background(self):
         on = self.bg_var.get()
-        try:
-            set_autostart(on)
-        except OSError as x:
+        if not self.set_background(on):
             self.bg_var.set(not on)
-            self.banner(f'Could not change the start-at-login setting: {x}', retry=False)
-            return
-        self.settings['background'] = on
-        save_settings(self.settings)
-        self.start_tray() if on else self.stop_tray()
-        self.heartbeat(force=True)
 
     def heartbeat(self, force=False):
         """'<hub user> background on|off' to the public ntfy topic in config.yml, so Pranav's `pool status` can show who
@@ -540,8 +534,37 @@ class App:
     def w_done(self):
         self.settings['setup_done'] = True
         save_settings(self.settings)
-        self.wizard(5, "You're set!", next_text='Finish', on_next=self.main)
-        self.label('Your GPU passed every check. Press Start whenever you are free; you can close the window right after.')
+        self.wizard(5, "You're set!", next_text='Finish', on_next=self._finish_setup)
+        self.label('Your GPU passed every check.')
+        self.done_bg = tk.BooleanVar(value=self.settings.get('background', True))
+        ttk.Checkbutton(self.body, text='Let Pranav start my GPU (background mode)', variable=self.done_bg).pack(anchor='w')
+        self.label(BG_SENTENCE, 'Small.TLabel', pady=(4, 10))
+        self.label('You can also press Start whenever you are free and close the window right after.')
+
+    def _finish_setup(self):
+        self.set_background(self.done_bg.get())
+        self.main()
+
+    def set_background(self, on):
+        """Background mode on/off, explicitly chosen (the key in settings records that a choice was made)."""
+        try:
+            set_autostart(on)
+        except OSError as x:
+            self.banner(f'Could not change the start-at-login setting: {x}', retry=False)
+            return False
+        self.settings['background'] = on
+        save_settings(self.settings)
+        self.start_tray() if on else self.stop_tray()
+        self.heartbeat(force=True)
+        return True
+
+    def migrate_background(self):
+        """v7: background mode is on by default. Installs that never chose (no key) get it on once, with a notice;
+        anyone who unticked it keeps it off."""
+        if 'background' in self.settings or not self.settings.get('setup_done'):
+            return
+        if self.set_background(True):
+            self.notice(f'Background mode is now on: {BG_SENTENCE}', secs=30)
 
     # ---- main view ----
     def main(self):
@@ -568,8 +591,7 @@ class App:
         self.notify_var = tk.BooleanVar(value=self.settings.get('notify', True))
         ttk.Checkbutton(self.body, text='Notify me if something fails', variable=self.notify_var,
                         command=lambda: (self.settings.update(notify=self.notify_var.get()), save_settings(self.settings))).pack(side='bottom', anchor='w')
-        self.label('When this laptop is on, Hermes starts your GPU by itself whenever team jobs are waiting or Pranav asks.',
-                   'Small.TLabel', side='bottom', pady=(0, 8))
+        self.label(BG_SENTENCE, 'Small.TLabel', side='bottom', pady=(0, 8))
         self.bg_var = tk.BooleanVar(value=bool(self.settings.get('background')))
         ttk.Checkbutton(self.body, text='Let Pranav start my GPU (background mode)', variable=self.bg_var,
                         command=self.toggle_background).pack(side='bottom', anchor='w')
@@ -685,6 +707,8 @@ def run(engine=None):
     app = App(root, e)
     if e.saved_login() and load_settings().get('setup_done'):
         app.main()  # also checks for updates
+        app.migrate_background()
+        app.bg_var.set(bool(app.settings.get('background')))
         if '--background' in sys.argv and app.settings.get('background'):  # started at login: straight to the tray/Dock
             app.on_close()
     else:
