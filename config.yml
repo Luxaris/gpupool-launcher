@@ -4,17 +4,17 @@ jobs_per_launch: 4        # a server stops after this many jobs per Start press 
 min_launcher_version: 1   # older apps refuse to run and show the Update button
 launcher_version: 9
 launcher_tag: v9
-sha256 gpupool.py: 8b5279490a18c05bb15202abf7f1b75eca53392c94de67dd72c3f972f1dfd491
-sha256 gpupool_gui.py: 9e653118a3e38535f154f3dbefe23733822bab2ef98fa1322edd8fc1c64285e3
-sha256 boot.sh: 3f4646b87eac1ba764acfe29ab8eb91954f823536473dbc09ad817a81850ee72
+sha256 gpupool.py: c27eae368eefef442794548e87d03ee0c509363f545f784cdc3e78f455a4185f
+sha256 gpupool_gui.py: e612d2b3f39596494026807a4ab15d9e330c4c710354ba623d33f8c391a4e6c2
+sha256 boot.sh: 0ae29bf508c65f014c938db07aee4569f059ab60eb1e4db64f2a7cfdf53e8cd5
 sha256 keepalive.sh: aabef214a31df9c2c37258fbd7459fae333102f054e380f4e372901b63e39324
-sha256 RunJobs-Setup.exe: de985f0ad8c604773fa9d9b5daa74c32117203923af6abaf173e5e7e5643274e
-sha256 RunJobs-mac-arm64.dmg: 4f4b6b1b9142c348b99b41bff616f445ad7b215aa9dea1e643fb5d7efcf443dc
-sha256 RunJobs-mac-x64.dmg: b6eb690dffdf61c78fbcfd3293390ab168718154c64d91f97fb4054728f5b1c5
-sha256 Hermes-mac-arm64.dmg: e3c95036e18ecff1a0b87296b2de5076f9644a5015b15f78372eae7f219a4ad7
-sha256 Hermes-mac-x64.dmg: 0ba8f638cf0454bb5bdc6674a7b476b55a019ff6bd32950266215f925e7d12c2
-sha256 Hermes-Setup.exe: de985f0ad8c604773fa9d9b5daa74c32117203923af6abaf173e5e7e5643274e
+sha256 RunJobs-Setup.exe: f41853d2df0ee32a0f8cd780630521da216ebefaaea92884425720534af60f38
+sha256 RunJobs-mac-arm64.dmg: 718578c952892b1084493585f1144ce631049550f04b40450e709912b7bf466d
+sha256 RunJobs-mac-x64.dmg: 0584d150e44bdfe9179e073399d859359ad4a43b2f3099e07b5c67a9677c7ff3
+sha256 Hermes-mac-arm64.dmg: a2539b8af63a79de2b8792aad66151a6fb8b7a63b9f90adc05a4623c3e6f75d4
+sha256 Hermes-mac-x64.dmg: 66533474027a78c572d175bb396c8793cda63348b3d8f1424d6eebc7c509ab17
+sha256 Hermes-Setup.exe: f41853d2df0ee32a0f8cd780630521da216ebefaaea92884425720534af60f38
 idle_wait_minutes: 15
 heartbeat_topic: hermes-teamsound-493d44df9a1c
-launcher_published: 2026-11-04T19:39:01Z
+launcher_published: 2026-11-04T19:55:57Z
 auto_update: false
