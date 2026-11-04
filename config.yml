@@ -2,20 +2,20 @@
 # so one commit changes it for everyone. Flat `key: value` lines only. `pool publish` rewrites the tag/sha lines.
 jobs_per_launch: 4        # a server stops after this many jobs per Start press (or earlier when the queue is empty)
 min_launcher_version: 1   # older apps refuse to run and show the Update button
-launcher_version: 10
-launcher_tag: v10
-sha256 gpupool.py: 7ebf78f8e16e647f3c86e2b4342c91b55d2847770fdfe60de0cd60c0b85f9476
-sha256 gpupool_gui.py: 11a2f04cf03a8bbb66ab4a291ba6be33a69f56ace43abeccc75acd9ae75db481
-sha256 boot.sh: 0ae29bf508c65f014c938db07aee4569f059ab60eb1e4db64f2a7cfdf53e8cd5
+launcher_version: 11
+launcher_tag: v11
+sha256 gpupool.py: 84c50356cf5f31bdb0efcdd1e4d39cc5ec43fd17ab2a1b6dff2603dba8329d2f
+sha256 gpupool_gui.py: d5f125c7456e066300d72a6cdfcb4579faadccefdf57aef80adc43c21d4b7b60
+sha256 boot.sh: 15b6439bba047edf48e929fc14b095e2da90b7e71cede9ce5ab5afc201f67b06
 sha256 keepalive.sh: aabef214a31df9c2c37258fbd7459fae333102f054e380f4e372901b63e39324
-sha256 RunJobs-Setup.exe: b793c423774d8c18ba3f7ea880f339b5da26932e0480671649ebe4b7ab50a960
-sha256 RunJobs-mac-arm64.dmg: 2785232737d62674c907c6e8ad271cea23cb039fb50dde40327d4306cdf48bca
-sha256 RunJobs-mac-x64.dmg: 8e0fad9b47a106d5951445a2db5bb217ab2aaa489bd19a1d2ee3e1bf03c2b6f4
-sha256 Hermes-mac-arm64.dmg: 5dd0d401d8c74879412b6ea86ac3976ccbd7d33b8cf075bf60644d40a472a558
-sha256 Hermes-mac-x64.dmg: 94cd4a745bdf0a84e3af0e4862545e43a1f267212d8f9cec8478da8dd78b45bc
-sha256 Hermes-Setup.exe: b793c423774d8c18ba3f7ea880f339b5da26932e0480671649ebe4b7ab50a960
+sha256 RunJobs-Setup.exe: 220b02f8ef5eff3f30c3a65d0c21ca138f85548314ac6825a2816d2ca1105ae9
+sha256 RunJobs-mac-arm64.dmg: 64baa6eb136b3c1b46c8ef1646585ca1d6c26a430f9c9b18f2ac2b8de2829293
+sha256 RunJobs-mac-x64.dmg: 997a7b3c8510c01e1b000d2791d8e347fdd2106a5b8531aabe618ea12ff0e5f0
+sha256 Hermes-mac-arm64.dmg: f976390e9b8820b2bc1a7a8ae8d35b308331c5bc0d51cbe0c1d3e7db32c68123
+sha256 Hermes-mac-x64.dmg: 437ea10f2bb5a8b9525a61b56043cd2e49efb0df40331441d14e9f7e37ad8e0f
+sha256 Hermes-Setup.exe: 220b02f8ef5eff3f30c3a65d0c21ca138f85548314ac6825a2816d2ca1105ae9
 idle_wait_minutes: 15
 heartbeat_topic: hermes-teamsound-493d44df9a1c
-launcher_published: 2026-11-04T22:26:54Z
+launcher_published: 2026-11-04T23:09:28Z
 auto_update: true
 stuck_stop_minutes: 100000
