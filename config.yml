@@ -17,5 +17,5 @@ sha256 Hermes-Setup.exe: f41853d2df0ee32a0f8cd780630521da216ebefaaea928844257205
 idle_wait_minutes: 15
 heartbeat_topic: hermes-teamsound-493d44df9a1c
 launcher_published: 2026-11-04T19:55:57Z
-auto_update: false
+auto_update: true
 stuck_stop_minutes: 30
