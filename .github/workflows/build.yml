@@ -26,7 +26,7 @@ jobs:
       - uses: actions/checkout@v7
       - uses: actions/setup-python@v7
         with: { python-version: '3.13' }
-      - run: pip install pyinstaller
+      - run: pip install pyinstaller certifi
       - name: Tray icon packages (Windows only; on a Mac Hermes uses its Dock icon)
         if: runner.os == 'Windows'
         run: pip install pystray pillow
@@ -39,7 +39,7 @@ jobs:
           t = os.environ.get('HERMES_READ_TOKEN', '').strip()
           open('hermes_token.py', 'w').write('TOKEN = %r\n' % t)
           print('read token embedded' if t else '::warning::HERMES_READ_TOKEN not set: this build can only read a PUBLIC repo')
-      - run: pyinstaller --noconfirm --onedir --windowed --name Hermes --hidden-import pystray._win32 --hidden-import hermes_token gpupool_gui.py
+      - run: pyinstaller --noconfirm --onedir --windowed --name Hermes --hidden-import pystray._win32 --hidden-import hermes_token --hidden-import certifi --collect-data certifi gpupool_gui.py
       - name: Windows installer (Inno Setup)
         if: runner.os == 'Windows'
         shell: pwsh

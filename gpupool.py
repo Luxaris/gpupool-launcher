@@ -8,10 +8,37 @@ Everything after a launch runs on the hub server (boot.sh): the laptop may close
   - the public repo PUBLIC (config.yml + release assets, pinned by tag, sha256-checked) for updates/server scripts.
 Your hub token stays in a user-only file in your config dir; nothing of Pranav's is used or shipped.
 """
-import base64, hashlib, json, os, platform, stat, subprocess, sys, tempfile, time, urllib.error, urllib.request, webbrowser
+import base64, hashlib, json, os, platform, ssl, stat, subprocess, sys, tempfile, time, urllib.error, urllib.request, webbrowser
 from datetime import datetime
 
-VERSION = 11
+
+def _ssl_context():
+    """HTTPS trust for every request (hub, Jupyter, GitHub, ntfy): the system's certificates plus certifi's bundle.
+    The Mac app's bundled Python sees no system certificates, so without certifi every request failed with
+    CERTIFICATE_VERIFY_FAILED (v11, Mac)."""
+    ctx = ssl.create_default_context()
+    try:
+        import certifi
+        ctx.load_verify_locations(certifi.where())
+    except (ImportError, OSError):
+        pass
+    return ctx
+
+
+SSL_CTX = _ssl_context()
+urllib.request.install_opener(urllib.request.build_opener(urllib.request.HTTPSHandler(context=SSL_CTX)))
+
+
+def net_error(e):
+    """Plain words for a network failure; certificate problems are Hermes's fault, not the teammate's token."""
+    r = getattr(e, 'reason', e)
+    if isinstance(r, ssl.SSLCertVerificationError) or 'CERTIFICATE_VERIFY_FAILED' in str(r):
+        return ("Hermes could not verify the hub's security certificate. This is a Hermes problem, not your token: "
+                f'update Hermes or tell Pranav. ({r})')
+    return f'Cannot reach the hub ({r}). Check your internet connection.'
+
+
+VERSION = 12
 APP = 'Hermes'
 HUB = 'https://hub.stratusgeo.org'
 TOKEN_PAGE = f'{HUB}/hub/token'
@@ -296,7 +323,7 @@ class Engine:
                 raise Fail('The hub did not accept your username/token.')
             raise Fail(f'Cannot reach the hub (HTTP {e.code}).')
         except urllib.error.URLError as e:
-            raise Fail(f'Cannot reach the hub ({e.reason}).')
+            raise Fail(net_error(e))
         return (u.get('servers') or {}).get('') or {}
 
     def state(self):
