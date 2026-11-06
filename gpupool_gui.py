@@ -79,6 +79,8 @@ BG_SENTENCE = ('Hermes starts in the tray at login and turns your GPU on only wh
 WAKE_VALID_S = 3600  # a `pool wake` request older than this is ignored (the laptop was off or asleep at the time)
 WARN_S = 300  # warning before Hermes takes over or stops an idle hub server that has no pool runner
 KEEP_S = 7200  # "Keep my server": leave it alone this long
+START_STUCK_S = 2700  # a start with no result after 45 min is abandoned (server_up waits at most ~30 min)
+TAKE_STUCK_S = 900  # same for a take-over / stop
 UPDATE_EVERY_S = 3600  # config.yml re-check for a newer Hermes (also at every app start)
 UPDATE_RETRY_S = 86400  # at most one automatic install attempt per version per day
 RUN_KEY = r'Software\Microsoft\Windows\CurrentVersion\Run'
@@ -210,7 +212,8 @@ class App:
         root.after(100, self._pump)
         self.tray, self.tray_state = None, None
         self.starting, self.updating, self.auto_started_at, self.taking_over = False, False, 0.0, False
-        self.bg_note = ''
+        self.bg_note, self.ctl = '', ''
+        self.start_at, self.start_gen, self.take_at = 0.0, 0, 0.0
         root.protocol('WM_DELETE_WINDOW', self.on_close)
         if self.settings.get('background'):
             self.start_tray()
@@ -256,7 +259,7 @@ class App:
         note = ' '.join(self.bg_note.split())[:120]
         tok = gp.token_note()  # read-token trouble ('rejected' / 'expires-YYYY-MM-DD'), for Pranav's `pool status`
         msg = (f'{self.e.user} background {"on" if self.settings.get("background") else "off"} v{gp.VERSION}'
-               f'{" tok=" + tok if tok else ""}{" last=" + note if note else ""}')
+               f'{" tok=" + tok if tok else ""}{" ctl=" + self.ctl if self.ctl else ""}{" last=" + note if note else ""}')
         self.bg(lambda: gp.fetch(f'https://ntfy.sh/{topic}', data=msg.encode(), method='POST', timeout=15), None, lambda m: None)
 
     def note(self, text):
@@ -338,15 +341,30 @@ class App:
         limit = self.stuck_limit()
         if info.get('alive') and info.get('own') and getattr(self.e, 'config_text', None) != getattr(self.e, 'pushed_config', None):
             self.bg(self.e.push_config, None, lambda m: None)  # boot.sh reads its settings from the copy Hermes uploads
+        # A start or take-over whose result never came back (a request that hung: e.g. a DNS lookup or the laptop
+        # sleeping mid-request; v12 then skipped take-control for 8+ h with "skip: your hub server is gpu") is
+        # abandoned after a while, so the safety rules run again. Its late result, if any, is ignored (start_gen).
+        if self.starting and now - self.start_at > START_STUCK_S:
+            self.starting, self.start_gen = False, self.start_gen + 1
+            self.note(f'a start got no answer for {int((now - self.start_at) / 60)} min: abandoned, checking the server again')
+        if self.taking_over and now - self.take_at > TAKE_STUCK_S:
+            self.taking_over = False
+            self.note('a take-over got no answer for 15 min: abandoned, checking the server again')
         if server in ('gpu', 'cpu') and not self.starting and not self.taking_over:
             return self.take_control(info, now, limit)
+        if self.starting:
+            self.set_ctl(f'start-running-{int((now - self.start_at) / 60)}m')
+        elif self.taking_over:
+            self.set_ctl('taking-over')
+        else:
+            self.set_ctl('')
         if not self.settings.get('background'):
             return
         trigger = int(q.get('waiting', 0)) > 0 or wake_time(q, self.e.user) > self.settings.get('last_wake', 0)
         if self.settings.get('paused_until', 0) > now:
             return self.note('paused') if trigger else None
         if server != 'off':
-            return self.note(f'skip: your hub server is {server}') if trigger else None
+            return self.note(f'skip: your hub server is {server} (a start is still running)') if trigger else None
         if self.settings.get('fresh_start') and self.screen == 'main' and not self.starting:
             self.settings.pop('fresh_start')  # Hermes just stopped a stuck server: start a controlled one in its place
             if now - self.settings.get('fresh_at', 0) < KEEP_S:  # at most one replacement server per 2 h: no loop
@@ -386,6 +404,10 @@ class App:
         may_adopt = info['own'] or (bool(self.settings.get('background')) and self.settings.get('paused_until', 0) <= now)
         act = server_action(info, r, now, limit, may_adopt)
         mins = limit // 60
+        left = int((WARN_S - (now - r.get('warned_at', now))) / 60) + 1
+        self.set_ctl({'none': 'watchdog-alive', 'active': f'in-use-idle-{int(info["idle"] / 60)}m-of-{mins}m', 'kept': 'kept',
+                      'wait': f'acting-in-{left}m', 'warn': 'acting-in-5m', 'adopt': 'adopting', 'stop': 'stopping'}[act]
+                     + ('-own' if info['own'] else ''))
         if act == 'active':
             r.pop('warned_at', None)
             if not info['own']:
@@ -400,7 +422,7 @@ class App:
             self.note(f'warned: idle {int(info["idle"] / 60)} min, no runner; acting in 5 min')
         elif act == 'adopt':
             r['tries'] = r.get('tries', 0) + 1
-            self.taking_over = True
+            self.taking_over, self.take_at = True, now
             self.note(f'taking over the server for pool jobs ({r["tries"]}/3)')
 
             def ok(res):
@@ -416,7 +438,7 @@ class App:
                 self.note(f'take-over failed ({r["tries"]}/3): {m}')
             self.bg(lambda: self.guarded(info, self.e.adopt), ok, bad)
         elif act == 'stop':
-            self.taking_over = True
+            self.taking_over, self.take_at = True, now
 
             def stopped(res):
                 self.taking_over = False
@@ -435,6 +457,15 @@ class App:
             self.bg(lambda: self.guarded(info, self.e.stop_server), stopped, failed)
         self.settings['rogue'] = r
         save_settings(self.settings)
+
+    def set_ctl(self, ctl):
+        """What take-control is doing about the hub server (one word, sent as ctl= in heartbeats for `pool status`).
+        A new kind of state (not just a new minute count) is reported at once."""
+        kind = lambda c: ''.join(ch for ch in c if not ch.isdigit())
+        changed = kind(ctl) != kind(self.ctl)
+        self.ctl = ctl
+        if changed:
+            self.heartbeat(force=True)
 
     def guarded(self, info, action):
         """Worker side of a take-over / stop: only if still due with fresh settings, and boot.sh really is not running."""
@@ -881,7 +912,9 @@ class App:
         the launch worked, so a failed background start is tried again on the next checks (at most 3 times)."""
         self.banner_box.pack_forget()
         self.start_btn.configure(state='disabled')
-        self.starting = True
+        self.starting, self.start_at = True, gp.now()
+        self.start_gen += 1
+        gen = self.start_gen
         self.big.configure(text='Starting your GPU...')
         self.sub.configure(text='About 5-15 minutes. You can close this window once it says GPU on.')
 
@@ -895,6 +928,8 @@ class App:
             return self.e.trigger()
 
         def done(how):
+            if gen != self.start_gen:
+                return log_line(f'late result of an abandoned start ignored: {how}')
             self.starting = False
             if auto:
                 self.settings['last_auto_set'] = auto[0]
@@ -907,6 +942,8 @@ class App:
                 else self.w_terminal() if how == 'paste' else self.refresh()
 
         def failed(msg):
+            if gen != self.start_gen:
+                return log_line(f'late failure of an abandoned start ignored: {msg}')
             self.starting = False
             if auto:
                 f = self.settings.get('auto_fail', {})

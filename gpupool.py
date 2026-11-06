@@ -38,7 +38,7 @@ def net_error(e):
     return f'Cannot reach the hub ({r}). Check your internet connection.'
 
 
-VERSION = 12
+VERSION = 13
 APP = 'Hermes'
 HUB = 'https://hub.stratusgeo.org'
 TOKEN_PAGE = f'{HUB}/hub/token'
