@@ -79,7 +79,7 @@ BG_SENTENCE = ('Hermes starts in the tray at login and turns your GPU on only wh
 WAKE_VALID_S = 3600  # a `pool wake` request older than this is ignored (the laptop was off or asleep at the time)
 WARN_S = 300  # warning before Hermes takes over or stops an idle hub server that has no pool runner
 KEEP_S = 7200  # "Keep my server": leave it alone this long
-START_STUCK_S = 2700  # a start with no result after 45 min is abandoned (server_up waits at most ~30 min)
+START_STUCK_S = 1800  # a start with no result after 30 min is abandoned (= the server's own 30-min limit)
 TAKE_STUCK_S = 900  # same for a take-over / stop
 UPDATE_EVERY_S = 3600  # config.yml re-check for a newer Hermes (also at every app start)
 UPDATE_RETRY_S = 86400  # at most one automatic install attempt per version per day

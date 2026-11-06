@@ -74,6 +74,10 @@ case "$MODE" in
     touch $G/hooked; echo "gpupool hook installed. You can close this browser tab."
     MODE=$(cat $G/armed 2> /dev/null || echo start) ;;
 esac
+if [ "${2:-}" != --bg ] && [ -f $G/armed ] && [ $(( $(date +%s) - $(stat -c %Y $G/armed) )) -gt 1800 ]; then
+  rm -f $G/armed  # left over from a launch whose laptop went away: never let it arm a server started later by hand
+  echo "$(date +%F' '%T) stale start request (over 30 min old) ignored"; exit 0
+fi
 rm -f $G/armed  # one start per Start press; the teammate's own terminals never trigger anything
 if [ "${2:-}" != --bg ]; then  # detach from the Jupyter terminal
   setsid nohup bash $G/boot.sh "$MODE" --bg >> $G/boot.log 2>&1 < /dev/null &

@@ -8,7 +8,7 @@ Everything after a launch runs on the hub server (boot.sh): the laptop may close
   - the public repo PUBLIC (config.yml + release assets, pinned by tag, sha256-checked) for updates/server scripts.
 Your hub token stays in a user-only file in your config dir; nothing of Pranav's is used or shipped.
 """
-import base64, hashlib, json, os, platform, ssl, stat, subprocess, sys, tempfile, time, urllib.error, urllib.request, webbrowser
+import base64, hashlib, hmac, json, os, platform, ssl, stat, subprocess, sys, tempfile, time, urllib.error, urllib.request, webbrowser
 from datetime import datetime
 
 
@@ -38,7 +38,7 @@ def net_error(e):
     return f'Cannot reach the hub ({r}). Check your internet connection.'
 
 
-VERSION = 13
+VERSION = 14
 APP = 'Hermes'
 HUB = 'https://hub.stratusgeo.org'
 TOKEN_PAGE = f'{HUB}/hub/token'
@@ -52,7 +52,33 @@ except ImportError:
     _GH_TOKEN = ''
 GH = {'state': 'none' if not _GH_TOKEN else 'unused', 'expires': ''}  # for heartbeats: is the read token healthy?
 GPU_OPTS = {'profile': 'gpu', 'image--unlisted-choice': 'quay.io/cryointhecloud/cryo-python-ai:latest'}  # = stratusgeo preset 5
-SERVER_FILES = ('boot.sh', 'keepalive.sh')
+SERVER_FILES = ('boot.sh', 'keepalive.sh', 'autostart.py')
+JUPYTER_CFG = '.jupyter/jupyter_server_config.py'
+HOOK_BEGIN, HOOK_END = '# >>> gpupool (Hermes)', '# <<< gpupool (Hermes)'
+JUPYTER_HOOK = f'''{HOOK_BEGIN}: start the pool watchdog at server boot, only for servers Hermes asked for (signed request,
+# see ~/gpupool/autostart.py). Does nothing otherwise and never stops Jupyter from starting. Remove this block to opt out.
+try:
+    import os as _gp_os, subprocess as _gp_sp, sys as _gp_sys
+    _gp_a = _gp_os.path.expanduser('~/gpupool/autostart.py')
+    if _gp_os.path.exists(_gp_a):
+        _gp_sp.Popen([_gp_sys.executable, _gp_a], start_new_session=True, stdin=_gp_sp.DEVNULL,
+                     stdout=open(_gp_os.path.expanduser('~/gpupool/autostart.log'), 'a'), stderr=_gp_sp.STDOUT)
+except Exception:
+    pass
+{HOOK_END}
+'''
+
+
+def with_hook(existing):
+    """jupyter_server_config.py with our block in it exactly once; the teammate's own settings are kept."""
+    text = existing or ''
+    if HOOK_BEGIN in text and HOOK_END in text:
+        a, b = text.index(HOOK_BEGIN), text.index(HOOK_END) + len(HOOK_END)
+        text = text[:a] + text[b:].lstrip('\n')
+    text = text.rstrip('\n')
+    return (text + '\n\n' if text.strip() else '') + JUPYTER_HOOK
+
+
 INSTALL_LINE = 'bash ~/gpupool/boot.sh install'
 CFG_DIR = os.path.join(os.environ.get('APPDATA') or os.path.expanduser('~/.config'), 'gpupool')
 LOGIN = os.path.join(CFG_DIR, 'login.json')
@@ -459,6 +485,7 @@ class Engine:
                 os.makedirs(CFG_DIR, exist_ok=True)
                 with open(SPAWNED, 'w') as f:  # lets a later check finish this launch (own_server)
                     json.dump({'t': now()}, f)
+                self.post_spawn_request()  # lets the server start its own watchdog even if this laptop goes away now
                 try:
                     self.api('POST', f'{HUB}/hub/api/users/{self.user}/server', GPU_OPTS)
                 except urllib.error.HTTPError as e:
@@ -511,6 +538,9 @@ class Engine:
     def prepare(self, mode='start', code=None):
         """Upload fresh, checksum-verified server scripts (+ the registration code) and arm boot.sh."""
         scripts = {n: self.asset(n) for n in SERVER_FILES}
+        if not self.dry:
+            self.api('PUT', f'{self.base}/api/contents/gpupool', {'type': 'directory'})
+            self.install_autostart()
         if self.dry:
             return
         self.api('PUT', f'{self.base}/api/contents/gpupool', {'type': 'directory'})
@@ -522,6 +552,47 @@ class Engine:
             self.put('gpupool/regtoken', code.strip().encode())
         self.push_config()
         self.put('gpupool/armed', mode.encode())
+
+    # ---- server-side autostart: a server Hermes spawned starts its own watchdog, laptop or not ----
+    def spawn_key(self):
+        """The secret that signs spawn requests: in the teammate's home (~/gpupool/spawn_key) and on this laptop."""
+        path = os.path.join(CFG_DIR, f'spawn_key-{self.user}')
+        key = open(path).read().strip() if os.path.exists(path) else ''
+        return key, path
+
+    def install_autostart(self):
+        """Once per launch (server running): the spawn key on both sides and our block in jupyter_server_config.py."""
+        key, path = self.spawn_key()
+        remote = self.text('gpupool/spawn_key').strip()
+        if remote and remote != key:
+            key = remote  # another laptop set it up: use the same key
+        if not key:
+            key = base64.b16encode(os.urandom(24)).decode().lower()
+        if remote != key:
+            self.put('gpupool/spawn_key', key.encode())
+        os.makedirs(CFG_DIR, exist_ok=True)
+        fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, stat.S_IRUSR | stat.S_IWUSR)
+        with os.fdopen(fd, 'w') as f:
+            f.write(key)
+        if not self.exists('.jupyter'):
+            self.api('PUT', f'{self.base}/api/contents/.jupyter', {'type': 'directory'})
+        old = self.text(JUPYTER_CFG) if self.exists(JUPYTER_CFG) else ''
+        new = with_hook(old)
+        if new != old:
+            self.put(JUPYTER_CFG, new.encode())
+
+    def post_spawn_request(self):
+        """'gpupool-spawn <user> <time> <hmac>' to the pool's ntfy topic, read by the new server's autostart.py."""
+        key, _ = self.spawn_key()
+        topic = (self.config or {}).get('heartbeat_topic')
+        if not key or not topic:
+            return  # set up before v14 (no key yet) or no topic: the laptop-driven start still works
+        t = int(now())
+        sig = hmac.new(key.encode(), f'{self.user}|{t}'.encode(), hashlib.sha256).hexdigest()
+        try:
+            fetch(f'https://ntfy.sh/{topic}', data=f'gpupool-spawn {self.user} {t} {sig}'.encode(), method='POST', timeout=15)
+        except Exception:
+            pass
 
     def trigger(self):
         """Start boot.sh through a Jupyter terminal (its login shell runs the ~/.profile hook), then check it ran:
