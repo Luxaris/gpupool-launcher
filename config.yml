@@ -18,4 +18,4 @@ idle_wait_minutes: 15
 heartbeat_topic: hermes-teamsound-493d44df9a1c
 launcher_published: 2026-11-05T22:25:44Z
 auto_update: true
-stuck_stop_minutes: 100000
+stuck_stop_minutes: 30
